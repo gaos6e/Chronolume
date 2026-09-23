@@ -312,7 +312,16 @@ fn parse_token_count(
 
     let (usage, cumulative) =
         if let Some(total) = info.get("total_token_usage").and_then(parse_token_values) {
-            (delta_from_cursor(&total, cursor), Some(total))
+            // `last_token_usage` is the increment for this token event. A
+            // fork's first `total_token_usage` can include the parent's full
+            // history, so it must only seed the cursor when the per-event
+            // value is present. Older records without `last_token_usage`
+            // continue to use the cumulative delta.
+            let usage = info
+                .get("last_token_usage")
+                .and_then(parse_token_values)
+                .unwrap_or_else(|| delta_from_cursor(&total, cursor));
+            (usage, Some(total))
         } else if let Some(last) = info.get("last_token_usage").and_then(parse_token_values) {
             (last, None)
         } else {
@@ -733,6 +742,75 @@ mod tests {
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 20);
         assert!(!outcome.cursor.contains_embedded_history);
+    }
+
+    #[test]
+    fn seeds_a_fork_total_without_charging_zero_last_usage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fork-token-seed.jsonl");
+        let values = [
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"child","session_id":"parent","forked_from_id":"parent"}}),
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"parent"}}),
+            json!({"timestamp":"2026-07-10T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":700,"cached_input_tokens":600,"output_tokens":70,"reasoning_output_tokens":10}}}}),
+            json!({"timestamp":"2026-07-10T01:01:00Z","type":"session_meta","payload":{"id":"child","session_id":"parent","forked_from_id":"parent"}}),
+            json!({"timestamp":"2026-07-10T01:01:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"output_tokens":100,"reasoning_output_tokens":20},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}}}),
+            json!({"timestamp":"2026-07-10T01:01:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1030,"cached_input_tokens":910,"output_tokens":103,"reasoning_output_tokens":23},"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"output_tokens":3,"reasoning_output_tokens":3}}}}),
+        ];
+        std::fs::write(
+            &path,
+            values.iter().map(line).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+
+        let (records, outcome) = run(&path, ChangeAction::Replay, SourceCursor::default());
+        let usage: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                ParsedRecord::Usage(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].input_tokens, 30);
+        assert_eq!(usage[0].cached_input_tokens, 10);
+        assert_eq!(usage[0].output_tokens, 3);
+        assert_eq!(usage[0].reasoning_tokens, 3);
+        assert_eq!(outcome.cursor.cumulative_input_tokens, 1030);
+        assert_eq!(outcome.cursor.cumulative_cached_input_tokens, 910);
+        assert_eq!(outcome.cursor.cumulative_output_tokens, 103);
+        assert_eq!(outcome.cursor.cumulative_reasoning_tokens, 23);
+    }
+
+    #[test]
+    fn uses_last_usage_when_a_fork_total_includes_parent_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fork-token-delta.jsonl");
+        let values = [
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"child","session_id":"parent","forked_from_id":"parent"}}),
+            json!({"timestamp":"2026-07-10T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"output_tokens":100,"reasoning_output_tokens":20},"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"output_tokens":3,"reasoning_output_tokens":3}}}}),
+            json!({"timestamp":"2026-07-10T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1030,"cached_input_tokens":910,"output_tokens":103,"reasoning_output_tokens":23},"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"output_tokens":3,"reasoning_output_tokens":3}}}}),
+        ];
+        std::fs::write(
+            &path,
+            values.iter().map(line).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+
+        let (records, _) = run(&path, ChangeAction::Replay, SourceCursor::default());
+        let usage: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                ParsedRecord::Usage(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usage.len(), 2);
+        for event in usage {
+            assert_eq!(event.input_tokens, 30);
+            assert_eq!(event.cached_input_tokens, 10);
+            assert_eq!(event.output_tokens, 3);
+            assert_eq!(event.reasoning_tokens, 3);
+        }
     }
 
     #[test]

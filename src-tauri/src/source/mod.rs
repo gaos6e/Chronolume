@@ -14,11 +14,11 @@ use walkdir::WalkDir;
 use crate::activity::{OperationKind, ToolCategory};
 use crate::error::{AppError, AppResult};
 
-// v6 rebuilds derived session summaries after the v5 fork-ownership upgrade.
-// Replaying every older JSONL checkpoint removes stale model and daily
-// aggregates that can otherwise remain internally consistent but disagree
-// with their retained source events.
-pub const PARSER_VERSION: i64 = 6;
+// v8 uses per-event fork token usage when cumulative totals include parent
+// history. Replaying every older JSONL checkpoint removes stale model and
+// daily aggregates that can otherwise remain internally consistent but
+// disagree with their retained source events.
+pub const PARSER_VERSION: i64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -17,6 +17,8 @@ use crate::pricing_update::TrustedPriceRow;
 fn builtin_display_name(pricing_id: &str) -> String {
     match pricing_id {
         "gpt-6-astra" => "GPT-6 Astra".to_string(),
+        "gpt-6-sol" => "GPT-6 Sol".to_string(),
+        "gpt-6-luna" => "GPT-6 Luna".to_string(),
         _ => pricing_id.to_string(),
     }
 }
@@ -672,7 +674,7 @@ mod tests {
     use crate::source::{CodexSource, FsCodexSource};
 
     #[test]
-    fn seeds_official_gpt_5_6_prices_and_preserves_user_override() {
+    fn seeds_official_gpt_prices_and_preserves_user_override() {
         let store = UsageStore::open_in_memory().unwrap();
         store.seed_builtin_prices().unwrap();
         let prices = store.model_prices(false).unwrap();
@@ -684,10 +686,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "gpt-6-astra",
+                "gpt-6-sol",
+                "gpt-6-luna",
                 "gpt-5.6-sol",
-                "gpt-5.6-terra",
-                "gpt-5.6-luna",
-                "gpt-5.5"
+                "gpt-5.6-terra"
             ]
         );
         let astra = prices
@@ -701,13 +703,37 @@ mod tests {
         assert_eq!(astra.cache_write_per_million_usd.as_deref(), Some("12.5"));
         let sol = prices
             .iter()
+            .find(|price| price.pricing_id == "gpt-6-sol")
+            .unwrap();
+        assert_eq!(sol.display_name, "GPT-6 Sol");
+        assert_eq!(sol.input_per_million_usd, "2");
+        assert_eq!(sol.output_per_million_usd, "10");
+        assert_eq!(sol.cache_read_per_million_usd, "0.2");
+        assert_eq!(sol.cache_write_per_million_usd.as_deref(), Some("2.5"));
+        let luna = prices
+            .iter()
+            .find(|price| price.pricing_id == "gpt-6-luna")
+            .unwrap();
+        assert_eq!(luna.display_name, "GPT-6 Luna");
+        assert_eq!(luna.input_per_million_usd, "0.1");
+        assert_eq!(luna.output_per_million_usd, "0.5");
+        assert_eq!(luna.cache_read_per_million_usd, "0.01");
+        assert_eq!(luna.cache_write_per_million_usd.as_deref(), Some("0.125"));
+        let legacy_sol = prices
+            .iter()
             .find(|price| price.pricing_id == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(sol.input_per_million_usd, "5");
-        assert_eq!(sol.cache_read_per_million_usd, "0.5");
-        assert_eq!(sol.cache_write_per_million_usd.as_deref(), Some("6.25"));
-        assert_eq!(sol.output_per_million_usd, "30");
-        assert_eq!(sol.source_url.as_deref(), Some(OFFICIAL_PRICING_SOURCE));
+        assert_eq!(legacy_sol.input_per_million_usd, "5");
+        assert_eq!(legacy_sol.cache_read_per_million_usd, "0.5");
+        assert_eq!(
+            legacy_sol.cache_write_per_million_usd.as_deref(),
+            Some("6.25")
+        );
+        assert_eq!(legacy_sol.output_per_million_usd, "30");
+        assert_eq!(
+            legacy_sol.source_url.as_deref(),
+            Some(OFFICIAL_PRICING_SOURCE)
+        );
 
         store
             .save_model_price(&ModelPriceInput {

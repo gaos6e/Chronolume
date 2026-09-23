@@ -215,6 +215,8 @@ fn parse_official_pricing(html: &str) -> AppResult<Vec<TrustedPriceRow>> {
 fn official_display_name(pricing_id: &str) -> String {
     match pricing_id {
         "gpt-6-astra" => "GPT-6 Astra".to_string(),
+        "gpt-6-sol" => "GPT-6 Sol".to_string(),
+        "gpt-6-luna" => "GPT-6 Luna".to_string(),
         _ => pricing_id.to_string(),
     }
 }
@@ -279,5 +281,7 @@ mod tests {
         assert_eq!(sol.cache_write_per_million_usd.as_deref(), Some("6.25"));
         let gpt_55 = rows.iter().find(|row| row.pricing_id == "gpt-5.5").unwrap();
         assert_eq!(gpt_55.cache_write_per_million_usd, None);
+        assert_eq!(official_display_name("gpt-6-sol"), "GPT-6 Sol");
+        assert_eq!(official_display_name("gpt-6-luna"), "GPT-6 Luna");
     }
 }
