@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "chronolume"
-version = "2.1.7"
+version = "2.1.8"
 dependencies = [
  "blake3",
  "chrono",

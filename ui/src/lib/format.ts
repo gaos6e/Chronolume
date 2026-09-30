@@ -9,6 +9,10 @@ export function formatExact(value: number): string {
   return Math.round(value).toLocaleString();
 }
 
+export function formatTps(value: number | null | undefined): string {
+  return value == null ? '—' : `${value.toFixed(1)} token/s`;
+}
+
 export function formatCost(microusd?: number): string {
   if (microusd == null) return i18n.t('未定价');
   const dollars = microusd / 1_000_000;

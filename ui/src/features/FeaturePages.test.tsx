@@ -93,7 +93,7 @@ describe('feature pages', () => {
       activeMs: 60_000, activeMethod: 'lifecycle', activeIsEstimate: false,
       modelProvider: 'openai', latestModel: 'gpt-5.6-sol', totalTokens: 120,
       inputTokens: 90, freshInputTokens: 70, cachedInputTokens: 20, outputTokens: 30,
-      reasoningTokens: 10, estimatedCostMicrousd: 5_000, unpricedEventCount: 0,
+      reasoningTokens: 10, tokensPerSecond: 0.5, estimatedCostMicrousd: 5_000, unpricedEventCount: 0,
       archived: false, integrityStatus: 'complete',
     };
     api.getSessions.mockResolvedValue({ page: 0, pageSize: 30, total: 1, items: [session] });
@@ -122,10 +122,17 @@ describe('feature pages', () => {
     });
     renderPage(<SessionsPage filters={filters} />);
 
+    expect(await screen.findByText('0.5 token/s')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'TPS' })).toHaveAttribute('title', expect.stringContaining('含推理'));
+    fireEvent.change(screen.getByRole('combobox', { name: '排序' }), { target: { value: 'tps' } });
+    await waitFor(() => expect(api.getSessions).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'tps', descending: true })));
+    fireEvent.click(screen.getByRole('button', { name: '降序' }));
+    await waitFor(() => expect(api.getSessions).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'tps', descending: false })));
     fireEvent.click(await screen.findByRole('button', { name: '查看会话详情' }));
     expect(await screen.findByText('仅显示结构化统计；不读取或显示对话正文。')).toBeInTheDocument();
     expect(screen.getByText('apply_patch · edit')).toBeInTheDocument();
     expect(within(screen.getByLabelText('会话结构化详情')).getByText(/生命周期/)).toBeInTheDocument();
+    expect(within(screen.getByLabelText('会话结构化详情')).getByText('0.5 token/s')).toBeInTheDocument();
     expect(api.getUsageEvents).toHaveBeenCalledWith('session-1', 0);
   });
 
@@ -135,7 +142,7 @@ describe('feature pages', () => {
       items: [{
         model: 'gpt-5.6-custom', sessionCount: 1,
         inputTokens: 100, freshInputTokens: 80, cachedInputTokens: 20, outputTokens: 10,
-        reasoningTokens: 5, totalTokens: 115, cacheHitRate: .2,
+        reasoningTokens: 5, totalTokens: 115, cacheHitRate: .2, averageTokensPerSecond: 12.34,
         estimatedCostMicrousd: undefined, unpricedEventCount: 1,
       }],
     });
@@ -149,6 +156,12 @@ describe('feature pages', () => {
     expect((await screen.findAllByText('未定价')).length).toBeGreaterThan(0);
     expect(api.getModels).toHaveBeenCalledWith(expect.objectContaining({ sort: 'name', descending: true }));
     expect(screen.getByRole('columnheader', { name: '平均每百万 Token 成本' })).toBeInTheDocument();
+    expect(screen.getByText('12.3 token/s')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '平均 TPS' })).toHaveAttribute('title', expect.stringContaining('按时长加权'));
+    fireEvent.change(screen.getByRole('combobox', { name: '排序' }), { target: { value: 'tps' } });
+    await waitFor(() => expect(api.getModels).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'tps', descending: true })));
+    fireEvent.click(screen.getByRole('button', { name: '降序' }));
+    await waitFor(() => expect(api.getModels).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'tps', descending: false })));
     expect(screen.queryByText('$0.00')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '价格表' }));
     expect(await screen.findByText('GPT-5.6 Sol')).toBeInTheDocument();

@@ -14,7 +14,7 @@ import {
 } from '../../api';
 import { PageControls } from '../../components/PageControls';
 import { QueryStatus } from '../../components/QueryStatus';
-import { formatCost, formatTokens } from '../../lib/format';
+import { formatCost, formatTokens, formatTps } from '../../lib/format';
 import type { ModelPriceInput, UsageFilters } from '../../types';
 
 const EMPTY_PRICE: ModelPriceInput = {
@@ -24,6 +24,7 @@ const EMPTY_PRICE: ModelPriceInput = {
 
 export function ModelsPage({ filters }: { filters: UsageFilters }) {
   const { t } = useTranslation();
+  const tpsDescription = `${t('模型平均 TPS = 总输出 Token ÷ 总活跃秒数，按时长加权。')} ${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')}`;
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<'usage' | 'prices'>('usage');
   const [search, setSearch] = useState('');
@@ -60,19 +61,20 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
         <PageControls
           search={search} sort={sort} descending={descending} page={page} pageSize={30}
           total={models.data?.total ?? 0}
-          sortOptions={[{ value: 'tokens', label: 'Token' }, { value: 'cost', label: t('成本') }, { value: 'sessions', label: t('会话') }, { value: 'recent', label: t('最近使用') }, { value: 'name', label: t('名称') }]}
+          sortOptions={[{ value: 'tokens', label: 'Token' }, { value: 'tps', label: t('平均 TPS') }, { value: 'cost', label: t('成本') }, { value: 'sessions', label: t('会话') }, { value: 'recent', label: t('最近使用') }, { value: 'name', label: t('名称') }]}
           onSearch={(value) => { setSearch(value); setPage(0); }} onSort={setSort}
           onDescending={setDescending} onPage={setPage}
         />
         <QueryStatus loading={models.isLoading && !models.data} error={models.error} onRetry={() => void models.refetch()} />
         {!models.isError && (
         <div className="data-table-wrap"><table className="data-table">
-          <thead><tr><th>{t('模型')}</th><th>{t('会话')}</th><th>{t('输入')}</th><th>{t('缓存')}</th><th>{t('输出')}</th><th>{t('推理')}</th><th>{t('命中率')}</th><th>{t('成本')}</th><th>{t('平均每百万 Token 成本')}</th><th>{t('最近使用')}</th></tr></thead>
+          <thead><tr><th>{t('模型')}</th><th>{t('会话')}</th><th>{t('输入')}</th><th>{t('缓存')}</th><th>{t('输出')}</th><th>{t('推理')}</th><th title={tpsDescription}>{t('平均 TPS')}</th><th>{t('命中率')}</th><th>{t('成本')}</th><th>{t('平均每百万 Token 成本')}</th><th>{t('最近使用')}</th></tr></thead>
           <tbody>{models.data?.items.map((model) => <tr key={model.model}>
             <td><strong>{model.model}</strong><small>{model.pricingModelId ? `${t('计价')} ${model.pricingModelId}` : t('未匹配价格')}</small></td>
             <td>{model.sessionCount.toLocaleString()}</td><td>{formatTokens(model.freshInputTokens)}</td>
             <td>{formatTokens(model.cachedInputTokens)}</td><td>{formatTokens(model.outputTokens)}</td>
             <td>{formatTokens(model.reasoningTokens)}</td>
+            <td className="tps-value" title={tpsDescription}>{formatTps(model.averageTokensPerSecond)}</td>
             <td>{model.cacheHitRate == null ? 'N/A' : `${(model.cacheHitRate * 100).toFixed(1)}%`}</td>
             <td>{formatCost(model.estimatedCostMicrousd)}{model.unpricedEventCount > 0 && <small className="warning-copy">{t('未定价')}</small>}</td>
             <td>{formatCost(model.averageCostMicrousdPerMillionTokens)}</td>

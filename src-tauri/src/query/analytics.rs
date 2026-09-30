@@ -81,6 +81,7 @@ pub struct SessionRow {
     pub cached_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
+    pub tokens_per_second: Option<f64>,
     pub estimated_cost_microusd: Option<i64>,
     pub unpriced_event_count: i64,
     pub archived: bool,
@@ -103,6 +104,7 @@ pub struct ModelRow {
     pub estimated_cost_microusd: Option<i64>,
     pub unpriced_event_count: i64,
     pub average_cost_microusd_per_million_tokens: Option<f64>,
+    pub average_tokens_per_second: Option<f64>,
     pub last_used_at_ms: Option<i64>,
 }
 
@@ -443,6 +445,11 @@ impl UsageQuery {
         let condition = clauses.join(" AND ");
         let order = session_order(&query.sort);
         let direction = if query.descending { "DESC" } else { "ASC" };
+        let nulls_last = if query.sort == "tps" {
+            format!("({order}) IS NULL ASC, ")
+        } else {
+            String::new()
+        };
         self.store.with_reader(|connection| {
             let count_sql = format!(
                 "SELECT COUNT(*) FROM sessions s JOIN workspaces w ON w.id = s.workspace_id WHERE {condition}"
@@ -463,7 +470,7 @@ impl UsageQuery {
                         s.unpriced_event_count, s.archived, s.integrity_status
                  FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
                  WHERE {condition}
-                 ORDER BY {order} {direction}, s.id ASC LIMIT ? OFFSET ?",
+                 ORDER BY {nulls_last}{order} {direction}, s.id ASC LIMIT ? OFFSET ?",
                 provider = canonical_provider_sql("s.model_provider"),
             );
             let mut paged_values = values;
@@ -492,6 +499,11 @@ impl UsageQuery {
         }
         let order = model_order(&query.sort);
         let direction = if query.descending { "DESC" } else { "ASC" };
+        let nulls_last = if query.sort == "tps" {
+            format!("({order}) IS NULL ASC, ")
+        } else {
+            String::new()
+        };
         self.store.with_reader(|connection| {
             let count_sql = format!(
                 "SELECT COUNT(*) FROM (
@@ -509,10 +521,11 @@ impl UsageQuery {
                         SUM(d.fresh_input_tokens), SUM(d.cached_input_tokens),
                         SUM(d.output_tokens), SUM(d.reasoning_tokens), SUM(d.total_tokens),
                         SUM(d.priced_cost_microusd), SUM(d.priced_event_count),
-                        SUM(d.unpriced_event_count), MAX(d.last_activity_at_ms)
+                        SUM(d.unpriced_event_count), MAX(d.last_activity_at_ms),
+                        SUM(d.active_ms)
                  FROM session_daily_usage d WHERE {condition}
                  GROUP BY d.model_raw
-                 ORDER BY {order} {direction}, d.model_raw ASC LIMIT ? OFFSET ?"
+                 ORDER BY {nulls_last}{order} {direction}, d.model_raw ASC LIMIT ? OFFSET ?"
             );
             let mut paged_values = values;
             paged_values.push(SqlValue::Integer(i64::from(page_size)));
@@ -542,6 +555,7 @@ impl UsageQuery {
                         unpriced_event_count: row.get(11)?,
                         average_cost_microusd_per_million_tokens: priced_cost
                             .map(|value| value as f64 * 1_000_000_f64 / total_tokens.max(1) as f64),
+                        average_tokens_per_second: tokens_per_second(row.get(6)?, row.get(13)?),
                         last_used_at_ms: row.get(12)?,
                     })
                 })?
@@ -944,6 +958,10 @@ impl UsageQuery {
     }
 }
 
+fn tokens_per_second(output_tokens: i64, active_ms: i64) -> Option<f64> {
+    (active_ms > 0).then(|| output_tokens as f64 * 1000.0 / active_ms as f64)
+}
+
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
         id: row.get(0)?,
@@ -963,6 +981,7 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         cached_input_tokens: row.get(14)?,
         output_tokens: row.get(15)?,
         reasoning_tokens: row.get(16)?,
+        tokens_per_second: tokens_per_second(row.get(15)?, row.get(6)?),
         estimated_cost_microusd: row.get(17)?,
         unpriced_event_count: row.get(18)?,
         archived: row.get::<_, i64>(19)? != 0,
@@ -1008,6 +1027,7 @@ fn session_order(sort: &str) -> &'static str {
         "tokens" => "s.total_tokens",
         "cost" => "s.estimated_cost_microusd",
         "active_time" => "s.active_ms",
+        "tps" => "CAST(s.output_tokens AS REAL) * 1000.0 / NULLIF(s.active_ms, 0)",
         "started" => "s.started_at_ms",
         _ => "COALESCE(s.ended_at_ms, s.started_at_ms)",
     }
@@ -1019,6 +1039,7 @@ fn model_order(sort: &str) -> &'static str {
         "cost" => "SUM(d.priced_cost_microusd)",
         "name" => "model_strength_key(d.model_raw)",
         "recent" => "MAX(d.last_activity_at_ms)",
+        "tps" => "CAST(SUM(d.output_tokens) AS REAL) * 1000.0 / NULLIF(SUM(d.active_ms), 0)",
         _ => "SUM(d.total_tokens)",
     }
 }
@@ -1133,6 +1154,194 @@ mod tests {
             page: 0,
             page_size: 25,
         }
+    }
+
+    fn tps_query() -> UsageQuery {
+        let query = crate::query::tests::seeded_query();
+        query.store.with_writer(|transaction| {
+            transaction.execute(
+                "UPDATE sessions SET output_tokens = 600, reasoning_tokens = 100,
+                        total_tokens = input_tokens + 600, active_ms = 10000 WHERE id = 's1'",
+                [],
+            )?;
+            transaction.execute(
+                "UPDATE session_daily_usage SET output_tokens = 600, reasoning_tokens = 100,
+                        total_tokens = input_tokens + 600, active_ms = 10000",
+                [],
+            )?;
+            for (id, model, provider, output, reasoning, active_ms, archived) in [
+                ("s2", "gpt-5.6-sol", "openai", 600, 200, 30000, 1),
+                ("s3", "gpt-null", "openai", 50, 10, 0, 0),
+                ("s4", "gpt-zero", "openai", 0, 0, 1000, 0),
+                ("s5", "gpt-fast", "anthropic", 100, 25, 1000, 0),
+            ] {
+                transaction.execute(
+                    "INSERT INTO sessions (
+                        id, workspace_id, synthetic_title, started_at_ms, ended_at_ms,
+                        model_provider, latest_model_raw, primary_model_raw, output_tokens,
+                        reasoning_tokens, total_tokens, active_ms, archived, parser_version, updated_at_ms
+                     ) VALUES (?1, 'w1', ?1, 1783641601000, 1783641641000,
+                               ?3, ?2, ?2, ?4, ?5, ?4, ?6, ?7, 1, 0)",
+                    params![id, model, provider, output, reasoning, active_ms, archived],
+                )?;
+                transaction.execute(
+                    "INSERT INTO session_daily_usage (
+                        session_id, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
+                        workspace_id, model_provider, model_raw, archived, active_ms,
+                        output_tokens, reasoning_tokens, total_tokens
+                     ) VALUES (?1, '2026-07-10', 'UTC', 1783641600000, 1783728000000,
+                               'w1', ?3, ?2, ?7, ?6, ?4, ?5, ?4)",
+                    params![id, model, provider, output, reasoning, active_ms, archived],
+                )?;
+            }
+            // A second model in one session and an out-of-range day must not
+            // borrow the session's full duration or affect the selected model.
+            transaction.execute(
+                "INSERT INTO session_daily_usage (
+                    session_id, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
+                    workspace_id, model_provider, model_raw, archived, active_ms,
+                    output_tokens, total_tokens
+                 ) VALUES ('s2', '2026-07-10', 'UTC', 1783641600000, 1783728000000,
+                           'w1', 'openai', 'gpt-other', 1, 2000, 100, 100),
+                          ('s2', '2026-07-11', 'UTC', 1783728000000, 1783814400000,
+                           'w1', 'openai', 'gpt-5.6-sol', 1, 1000, 9000, 9000)",
+                [],
+            )?;
+            transaction.execute("DELETE FROM usage_events", [])?;
+            Ok(())
+        }).unwrap();
+        query
+    }
+
+    #[test]
+    fn tps_uses_output_and_active_milliseconds_and_survives_event_retention() {
+        assert_eq!(tokens_per_second(25, 500), Some(50.0));
+        assert_eq!(tokens_per_second(0, 1000), Some(0.0));
+        assert_eq!(tokens_per_second(100, 0), None);
+        let query = tps_query();
+        let sessions = query.sessions(&list_query()).unwrap();
+        let session = sessions.items.iter().find(|row| row.id == "s1").unwrap();
+        let detail = query.session_detail("s1").unwrap();
+        assert_eq!(session.tokens_per_second, Some(60.0));
+        assert_eq!(session.tokens_per_second, detail.session.tokens_per_second);
+        assert_eq!(detail.retained_event_count, 0);
+        assert_eq!(
+            query
+                .session_detail("s3")
+                .unwrap()
+                .session
+                .tokens_per_second,
+            None
+        );
+        assert_eq!(
+            query
+                .session_detail("s4")
+                .unwrap()
+                .session
+                .tokens_per_second,
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn model_tps_is_time_weighted_and_follows_model_date_and_archive_filters() {
+        let query = tps_query();
+        let mut request = list_query();
+        request.filters.model = Some("gpt-5.6-sol".into());
+        let models = query.models(&request).unwrap();
+        assert_eq!(models.total, 1);
+        assert_eq!(models.items[0].session_count, 2);
+        assert_eq!(models.items[0].average_tokens_per_second, Some(30.0));
+        request.filters.archived = ArchiveFilter::Active;
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(60.0)
+        );
+        request.filters.archived = ArchiveFilter::All;
+        request.filters.range.start_ms = Some(1_783_728_000_000);
+        request.filters.range.end_ms = Some(1_783_814_400_000);
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(9000.0)
+        );
+        request = list_query();
+        request.filters.model = Some("gpt-other".into());
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(50.0)
+        );
+        request.filters.model_provider = Some("custom".into());
+        assert!(query.models(&request).unwrap().items.is_empty());
+        request.filters.model = Some("gpt-fast".into());
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn tps_sorting_keeps_missing_values_last_in_both_directions_and_paginates() {
+        let query = tps_query();
+        let mut request = list_query();
+        request.sort = "tps".into();
+        for (descending, session_ids, model_names) in [
+            (
+                true,
+                vec!["s5", "s1", "s2", "s4", "s3"],
+                vec![
+                    "gpt-fast",
+                    "gpt-other",
+                    "gpt-5.6-sol",
+                    "gpt-zero",
+                    "gpt-null",
+                ],
+            ),
+            (
+                false,
+                vec!["s4", "s2", "s1", "s5", "s3"],
+                vec![
+                    "gpt-zero",
+                    "gpt-5.6-sol",
+                    "gpt-other",
+                    "gpt-fast",
+                    "gpt-null",
+                ],
+            ),
+        ] {
+            request.descending = descending;
+            let sessions = query.sessions(&request).unwrap();
+            assert_eq!(
+                sessions
+                    .items
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                session_ids
+            );
+            let models = query.models(&request).unwrap();
+            assert_eq!(
+                models
+                    .items
+                    .iter()
+                    .map(|row| row.model.as_str())
+                    .collect::<Vec<_>>(),
+                model_names
+            );
+            assert_eq!(models.items.last().unwrap().average_tokens_per_second, None);
+            assert_eq!(
+                models
+                    .items
+                    .iter()
+                    .find(|row| row.model == "gpt-zero")
+                    .unwrap()
+                    .average_tokens_per_second,
+                Some(0.0)
+            );
+        }
+        request.page_size = 2;
+        request.page = 2;
+        assert_eq!(query.sessions(&request).unwrap().items[0].id, "s3");
+        assert_eq!(query.models(&request).unwrap().items[0].model, "gpt-null");
     }
 
     #[test]

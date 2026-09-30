@@ -35,7 +35,7 @@ Chronolume 是为 OpenAI Codex 用户打造的 Windows 与 macOS 本地洞察应
 <table>
   <tr>
     <td width="50%"><strong>📈 看见使用节奏</strong><br>从今天到全部历史，用趋势图、年度热力图和活跃时间还原工作强度，而不只是堆一串 Token 数字。</td>
-    <td width="50%"><strong>💰 理解成本去向</strong><br>按提供方和模型拆分输入、输出、缓存与推理 Token，识别命中率、未定价事件和成本变化。</td>
+    <td width="50%"><strong>💰 理解成本去向</strong><br>按提供方和模型拆分输入、输出、缓存与推理 Token，查看按活跃时长计算的平均 TPS，识别命中率、未定价事件和成本变化。</td>
   </tr>
   <tr>
     <td width="50%"><strong>🧭 从项目追到工具</strong><br>工作区、会话、模型和工具活动彼此关联；同一组筛选条件贯穿页面与导出，不必在多份表格之间来回拼数据。</td>
@@ -58,7 +58,7 @@ Chronolume 是为 OpenAI Codex 用户打造的 Windows 与 macOS 本地洞察应
         <img src="docs/images/chronolume-models.png" alt="Chronolume 模型与成本分析" width="100%">
       </a>
       <br>
-      <sub><b>模型与成本</b> · 模型分布、缓存命中率与本地价格覆盖</sub>
+      <sub><b>模型与成本</b> · 模型分布、平均 TPS、缓存命中率与本地价格覆盖</sub>
     </td>
     <td width="50%" align="center" valign="top">
       <a href="docs/images/chronolume-activity.png">

@@ -24,4 +24,6 @@ v2 分析数据库在 Windows 位于 `%LOCALAPPDATA%\Chronolume\v2\chronolume-v2
 
 `usage_events` 和 `tool_events` 是唯一用于事件分页的表，按本地日边界删除 90 天前记录；删除前先重建永久汇总。`session_model_segments` 与 `activity_segments` 属于会话摘要，只保存模型/时间/计数，不保存消息、工具参数、命令或文件路径。
 
+TPS 使用输出 Token（已包含推理 Token）除以活跃秒数。会话 `tokensPerSecond` 从完整会话摘要计算；模型 `averageTokensPerSecond` 从当前筛选范围内 `session_daily_usage` 的总输出 Token 和总活跃时长计算，按时长加权。这些字段在查询时计算，无需 Schema 迁移或重新导入，事件明细过期后仍可使用永久汇总。活跃时长包含工具调用等等待，沿用现有生命周期及估算口径；总活跃时长为零时返回 `null`，有时长但无输出时返回 `0`。
+
 `source_files` 保存来源相对路径、类型、大小、mtime 纳秒、前缀哈希、安全偏移、完整行偏移、日志 rowid 水位、当前模型/提供方、累计 Token、解析器版本和脱敏错误码。所有表使用严格约束、外键和面向时间/筛选/分页的索引；完整定义以 [0001_initial.sql](../src-tauri/migrations/0001_initial.sql) 为准。

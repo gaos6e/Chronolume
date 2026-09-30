@@ -214,7 +214,7 @@ fn export_sessions(format: ExportFormat, rows: Vec<SessionRow>) -> AppResult<Exp
         return json_output_with_count(rows);
     }
     let mut csv = String::from(
-        "session,workspace,started_ms,ended_ms,active_ms,active_method,provider,model,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,archived,integrity\r\n",
+        "session,workspace,started_ms,ended_ms,active_ms,active_method,provider,model,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,archived,integrity,tokens_per_second\r\n",
     );
     for row in &rows {
         push_csv_row(
@@ -236,6 +236,7 @@ fn export_sessions(format: ExportFormat, rows: Vec<SessionRow>) -> AppResult<Exp
                 &optional_i64(row.estimated_cost_microusd),
                 &row.archived.to_string(),
                 &row.integrity_status,
+                &optional_f64(row.tokens_per_second),
             ],
         );
     }
@@ -250,7 +251,7 @@ fn export_models(format: ExportFormat, rows: Vec<ModelRow>) -> AppResult<ExportO
         return json_output_with_count(rows);
     }
     let mut csv = String::from(
-        "model,pricing_id,sessions,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,unpriced_events,last_used_ms\r\n",
+        "model,pricing_id,sessions,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,unpriced_events,last_used_ms,average_tokens_per_second\r\n",
     );
     for row in &rows {
         push_csv_row(
@@ -267,6 +268,7 @@ fn export_models(format: ExportFormat, rows: Vec<ModelRow>) -> AppResult<ExportO
                 &optional_i64(row.estimated_cost_microusd),
                 &row.unpriced_event_count.to_string(),
                 &optional_i64(row.last_used_at_ms),
+                &optional_f64(row.average_tokens_per_second),
             ],
         );
     }
@@ -362,6 +364,10 @@ fn optional_i64(value: Option<i64>) -> String {
     value.map_or_else(String::new, |value| value.to_string())
 }
 
+fn optional_f64(value: Option<f64>) -> String {
+    value.map_or_else(String::new, |value| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +376,85 @@ mod tests {
     fn csv_escaping_preserves_columns() {
         assert_eq!(csv_field("repo,one"), "\"repo,one\"");
         assert_eq!(csv_field("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn tps_exports_append_csv_columns_and_serialize_json_numbers_or_null() {
+        let session = SessionRow {
+            id: "s1".into(),
+            title: "Session 1".into(),
+            workspace_id: "w1".into(),
+            workspace_label: "Workspace 1".into(),
+            started_at_ms: None,
+            ended_at_ms: None,
+            active_ms: 500,
+            active_method: "lifecycle".into(),
+            active_is_estimate: false,
+            model_provider: "openai".into(),
+            latest_model: "gpt-5.6-sol".into(),
+            total_tokens: 120,
+            input_tokens: 100,
+            fresh_input_tokens: 60,
+            cached_input_tokens: 40,
+            output_tokens: 20,
+            reasoning_tokens: 5,
+            tokens_per_second: Some(40.0),
+            estimated_cost_microusd: None,
+            unpriced_event_count: 1,
+            archived: false,
+            integrity_status: "complete".into(),
+        };
+        let model = ModelRow {
+            model: session.latest_model.clone(),
+            pricing_model_id: None,
+            session_count: 1,
+            input_tokens: 100,
+            fresh_input_tokens: 60,
+            cached_input_tokens: 40,
+            output_tokens: 20,
+            reasoning_tokens: 5,
+            total_tokens: 120,
+            cache_hit_rate: Some(0.4),
+            estimated_cost_microusd: None,
+            unpriced_event_count: 1,
+            average_cost_microusd_per_million_tokens: None,
+            average_tokens_per_second: Some(40.0),
+            last_used_at_ms: None,
+        };
+        let mut missing_session = session.clone();
+        missing_session.tokens_per_second = None;
+        let mut missing_model = model.clone();
+        missing_model.average_tokens_per_second = None;
+
+        let csv = export_sessions(
+            ExportFormat::Csv,
+            vec![session.clone(), missing_session.clone()],
+        )
+        .unwrap();
+        let lines: Vec<_> = csv.content.lines().collect();
+        assert!(lines[0].ends_with(",tokens_per_second"));
+        assert!(lines[1].ends_with(",40"));
+        assert!(lines[2].ends_with(','));
+        assert_eq!(lines[0].split(',').count(), lines[2].split(',').count());
+        let json = export_sessions(ExportFormat::Json, vec![session, missing_session]).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json.content).unwrap();
+        assert_eq!(value["data"][0]["tokensPerSecond"], 40.0);
+        assert!(value["data"][1]["tokensPerSecond"].is_null());
+
+        let csv = export_models(
+            ExportFormat::Csv,
+            vec![model.clone(), missing_model.clone()],
+        )
+        .unwrap();
+        let lines: Vec<_> = csv.content.lines().collect();
+        assert!(lines[0].ends_with(",average_tokens_per_second"));
+        assert!(lines[1].ends_with(",40"));
+        assert!(lines[2].ends_with(','));
+        assert_eq!(lines[0].split(',').count(), lines[2].split(',').count());
+        let json = export_models(ExportFormat::Json, vec![model, missing_model]).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json.content).unwrap();
+        assert_eq!(value["data"][0]["averageTokensPerSecond"], 40.0);
+        assert!(value["data"][1]["averageTokensPerSecond"].is_null());
     }
 
     #[test]

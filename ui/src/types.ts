@@ -194,6 +194,7 @@ export interface SessionRow {
   cachedInputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
+  tokensPerSecond: number | null;
   estimatedCostMicrousd?: number;
   unpricedEventCount: number;
   archived: boolean;
@@ -214,6 +215,7 @@ export interface ModelRow {
   estimatedCostMicrousd?: number;
   unpricedEventCount: number;
   averageCostMicrousdPerMillionTokens?: number;
+  averageTokensPerSecond: number | null;
   lastUsedAtMs?: number;
 }
 
