@@ -16,6 +16,7 @@ use crate::pricing_update::TrustedPriceRow;
 
 fn builtin_display_name(pricing_id: &str) -> String {
     match pricing_id {
+        "gpt-6.1-sol" => "GPT-6.1 Sol".to_string(),
         "gpt-6-astra" => "GPT-6 Astra".to_string(),
         "gpt-6-sol" => "GPT-6 Sol".to_string(),
         "gpt-6-luna" => "GPT-6 Luna".to_string(),
@@ -661,7 +662,7 @@ fn nonnegative(value: i64) -> u64 {
 }
 
 fn official_snapshot_ms() -> i64 {
-    1_783_641_600_000
+    1_790_640_000_000
 }
 
 #[cfg(test)]
@@ -685,13 +686,23 @@ mod tests {
                 .map(|price| price.pricing_id.as_str())
                 .collect::<Vec<_>>(),
             vec![
+                "gpt-6.1-sol",
                 "gpt-6-astra",
                 "gpt-6-sol",
                 "gpt-6-luna",
-                "gpt-5.6-sol",
-                "gpt-5.6-terra"
+                "gpt-5.6-sol"
             ]
         );
+        let sol_61 = prices
+            .iter()
+            .find(|price| price.pricing_id == "gpt-6.1-sol")
+            .unwrap();
+        assert_eq!(sol_61.display_name, "GPT-6.1 Sol");
+        assert_eq!(sol_61.input_per_million_usd, "2");
+        assert_eq!(sol_61.output_per_million_usd, "10");
+        assert_eq!(sol_61.cache_read_per_million_usd, "0.1");
+        assert_eq!(sol_61.cache_write_per_million_usd.as_deref(), Some("2.5"));
+        assert_eq!(sol_61.source_updated_at_ms, Some(1_790_640_000_000));
         let astra = prices
             .iter()
             .find(|price| price.pricing_id == "gpt-6-astra")
@@ -723,13 +734,10 @@ mod tests {
             .iter()
             .find(|price| price.pricing_id == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(legacy_sol.input_per_million_usd, "5");
-        assert_eq!(legacy_sol.cache_read_per_million_usd, "0.5");
-        assert_eq!(
-            legacy_sol.cache_write_per_million_usd.as_deref(),
-            Some("6.25")
-        );
-        assert_eq!(legacy_sol.output_per_million_usd, "30");
+        assert_eq!(legacy_sol.input_per_million_usd, "4");
+        assert_eq!(legacy_sol.cache_read_per_million_usd, "0.4");
+        assert_eq!(legacy_sol.cache_write_per_million_usd.as_deref(), Some("5"));
+        assert_eq!(legacy_sol.output_per_million_usd, "20");
         assert_eq!(
             legacy_sol.source_url.as_deref(),
             Some(OFFICIAL_PRICING_SOURCE)
@@ -766,7 +774,7 @@ mod tests {
             .find(|price| price.pricing_id == "gpt-5.6-sol")
             .unwrap();
         assert!(!restored.is_overridden);
-        assert_eq!(restored.input_per_million_usd, "5");
+        assert_eq!(restored.input_per_million_usd, "4");
     }
 
     #[test]
@@ -813,6 +821,74 @@ mod tests {
     }
 
     #[test]
+    fn new_builtin_reprices_previously_unpriced_model_history() {
+        let codex = tempfile::tempdir().unwrap();
+        let sessions = codex.path().join("sessions/2026/09/29");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let content = [
+            json!({"timestamp":"2026-09-29T01:00:00Z","type":"session_meta","payload":{"id":"new-model-session","cwd":"C:/workspace/demo","model_provider":"openai"}}),
+            json!({"timestamp":"2026-09-29T01:00:01Z","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}),
+            json!({"timestamp":"2026-09-29T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"reasoning_output_tokens":0}}}}),
+        ]
+        .into_iter()
+        .map(|value| serde_json::to_string(&value).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n") + "\n";
+        std::fs::write(sessions.join("rollout-new-model.jsonl"), content).unwrap();
+
+        let store = UsageStore::open_in_memory().unwrap();
+        let source = FsCodexSource::new(codex.path());
+        let plan = source.plan(&[]).unwrap();
+        store
+            .apply_source_change(
+                &source,
+                &plan.changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        store
+            .with_reader(|connection| {
+                let unpriced: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM usage_events WHERE estimated_cost_microusd IS NULL",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(unpriced, 1);
+                Ok(())
+            })
+            .unwrap();
+
+        store.seed_builtin_prices().unwrap();
+        store.reprice_all(chrono_tz::UTC).unwrap();
+        store
+            .with_reader(|connection| {
+                let event: (String, i64) = connection.query_row(
+                    "SELECT pricing_model_id, estimated_cost_microusd FROM usage_events",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(event, ("gpt-6.1-sol".to_string(), 2240));
+                let session_cost: i64 = connection.query_row(
+                    "SELECT estimated_cost_microusd FROM sessions WHERE id = 'new-model-session'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let daily: (i64, i64) = connection.query_row(
+                    "SELECT priced_cost_microusd, unpriced_event_count FROM daily_usage_rollups",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(session_cost, 2240);
+                assert_eq!(daily, (2240, 0));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn user_price_change_reprices_events_sessions_and_daily_rollups_without_jsonl_reparse() {
         let codex = tempfile::tempdir().unwrap();
         let sessions = codex.path().join("sessions/2026/07/10");
@@ -854,7 +930,7 @@ mod tests {
                     .map_err(AppError::from)
             })
             .unwrap();
-        assert_eq!(before, 8_000_000);
+        assert_eq!(before, 6_000_000);
 
         // 现实数据库可能同时保留同一模型的“未定价”和“已定价”日汇总行；二者
         // 重算后会收敛到同一个 pricing_model_id，必须合并而不是触发主键冲突。

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 pub const OFFICIAL_PRICING_SOURCE: &str = "https://developers.openai.com/api/docs/pricing";
-pub const BUILTIN_PRICING_REVISION: i64 = 2_026_092_301;
+pub const BUILTIN_PRICING_REVISION: i64 = 2_026_092_901;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedModelId {
@@ -51,12 +51,13 @@ pub struct PricingCatalog {
 
 pub fn builtin_model_prices() -> Vec<ModelPrice> {
     [
+        ("gpt-6.1-sol", "2", "10", "0.1", Some("2.5")),
         ("gpt-6-astra", "10", "50", "1", Some("12.5")),
         ("gpt-6-sol", "2", "10", "0.2", Some("2.5")),
         ("gpt-6-luna", "0.1", "0.5", "0.01", Some("0.125")),
-        ("gpt-5.6-sol", "5", "30", "0.5", Some("6.25")),
-        ("gpt-5.6-terra", "2.5", "15", "0.25", Some("3.125")),
-        ("gpt-5.6-luna", "1", "6", "0.1", Some("1.25")),
+        ("gpt-5.6-sol", "4", "20", "0.4", Some("5")),
+        ("gpt-5.6-terra", "2", "12", "0.2", Some("2.5")),
+        ("gpt-5.6-luna", "0.2", "1.2", "0.02", Some("0.25")),
         ("gpt-5.5", "5", "30", "0.5", None),
         ("gpt-5.4", "2.5", "15", "0.25", None),
         ("gpt-5.4-mini", "0.75", "4.5", "0.075", None),
@@ -217,7 +218,7 @@ fn historical_tier_alias(value: &str) -> Option<String> {
 }
 
 /// 生成用于数据库名称排序的模型强度键。版本优先于同版本的强度层级，
-/// 因此降序稳定得到 6 Astra、6 Sol、6 Luna、5.6 Sol、5.6 Terra、
+/// 因此降序稳定得到 6.1 Sol、6 Astra、6 Sol、6 Luna、5.6 Sol、5.6 Terra、
 /// 5.6 Luna、5.5…。
 pub fn model_strength_sort_key(raw: &str) -> i64 {
     let normalized = normalize_model_id(raw).exact;
@@ -331,7 +332,7 @@ mod tests {
 
     #[test]
     fn preserves_dynamic_gpt_6_variants() {
-        for model in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+        for model in ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
             assert_eq!(normalize_model_id(model).exact, model);
         }
     }
@@ -339,6 +340,7 @@ mod tests {
     #[test]
     fn sorts_models_by_version_then_strength_tier() {
         let ordered = [
+            "gpt-6.1-sol",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -421,6 +423,40 @@ mod tests {
             PriceQuote::Priced { pricing_id, total_microusd: 735_000, .. }
                 if pricing_id == "gpt-6-luna"
         ));
+    }
+
+    #[test]
+    fn prices_gpt_6_1_sol_and_updated_gpt_5_6_rates() {
+        let catalog = PricingCatalog::new(builtin_model_prices());
+        let tokens = PriceableTokens {
+            fresh_input: 1_000_000,
+            cached_input: 1_000_000,
+            output: 1_000_000,
+            cache_write: 1_000_000,
+        };
+        for (model, expected_cost) in [
+            ("gpt-6.1-sol", 14_600_000),
+            ("gpt-5.6-sol", 29_400_000),
+            ("gpt-5.6-terra", 16_700_000),
+            ("gpt-5.6-luna", 1_670_000),
+        ] {
+            assert_eq!(
+                catalog.quote("openai", model, tokens),
+                PriceQuote::Priced {
+                    pricing_id: model.to_string(),
+                    revision: BUILTIN_PRICING_REVISION,
+                    total_microusd: expected_cost,
+                }
+            );
+        }
+        assert_eq!(
+            catalog.quote("custom", "OpenAI/GPT-6.1-SOL-2026-09-29-high", tokens),
+            catalog.quote("openai", "gpt-6.1-sol", tokens)
+        );
+        assert_eq!(
+            catalog.quote("openai", "gpt-6.1-sol-unknown", tokens),
+            PriceQuote::Unpriced
+        );
     }
 
     #[test]

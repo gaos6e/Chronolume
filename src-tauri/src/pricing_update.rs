@@ -171,7 +171,7 @@ impl PriceUpdateService {
 
 fn parse_official_pricing(html: &str) -> AppResult<Vec<TrustedPriceRow>> {
     let row_pattern = Regex::new(
-        r#"\[1,\[\[0,&quot;([^\"]+?)&quot;\],\[0,([^\]]+)\],\[0,([^\]]+)\],\[0,([^\]]+)\],\[0,([^\]]+)\]\]\]"#,
+        r#"\[1,\[\[0,&quot;([^\"\[\]]+?)&quot;\],\[0,([^\]]+)\],\[0,([^\]]+)\],\[0,([^\]]+)\],\[0,([^\]]+)\]\]\]"#,
     )
     .map_err(|_| AppError::new("pricing_parse_failed", "价格解析器初始化失败"))?;
     let mut rows = BTreeMap::new();
@@ -214,6 +214,7 @@ fn parse_official_pricing(html: &str) -> AppResult<Vec<TrustedPriceRow>> {
 
 fn official_display_name(pricing_id: &str) -> String {
     match pricing_id {
+        "gpt-6.1-sol" => "GPT-6.1 Sol".to_string(),
         "gpt-6-astra" => "GPT-6 Astra".to_string(),
         "gpt-6-sol" => "GPT-6 Sol".to_string(),
         "gpt-6-luna" => "GPT-6 Luna".to_string(),
@@ -283,5 +284,36 @@ mod tests {
         assert_eq!(gpt_55.cache_write_per_million_usd, None);
         assert_eq!(official_display_name("gpt-6-sol"), "GPT-6 Sol");
         assert_eq!(official_display_name("gpt-6-luna"), "GPT-6 Luna");
+    }
+
+    #[test]
+    fn skips_incompatible_rows_without_swallowing_the_next_model() {
+        let mut html =
+            String::from(r#"[1,[[0,&quot;gpt-5.4-mini&quot;],[0,0.75],[0,0.075],[0,4.5]]]"#);
+        for model in [
+            "gpt-6.1-sol",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "o3",
+        ] {
+            html.push_str(&format!(
+                "[1,[[0,&quot;{model}&quot;],[0,2],[0,0.1],[0,2.5],[0,10]]]"
+            ));
+        }
+        let rows = parse_official_pricing(&html).unwrap();
+        assert_eq!(rows.len(), 8);
+        assert!(rows.iter().all(|row| !row.pricing_id.contains('[')));
+        assert!(rows.iter().all(|row| row.pricing_id != "gpt-5.4-mini"));
+        let sol = rows
+            .iter()
+            .find(|row| row.pricing_id == "gpt-6.1-sol")
+            .unwrap();
+        assert_eq!(sol.display_name, "GPT-6.1 Sol");
+        assert_eq!(sol.cache_read_per_million_usd, "0.1");
+        assert_eq!(sol.cache_write_per_million_usd.as_deref(), Some("2.5"));
     }
 }
