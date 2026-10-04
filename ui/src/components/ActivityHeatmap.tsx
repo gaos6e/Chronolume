@@ -2,17 +2,21 @@ import type { HeatmapMetric, HeatmapSnapshot, HeatmapSpan } from '../types';
 import { useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatDuration, formatExact, formatTokens } from '../lib/format';
+import { QueryStatus } from './QueryStatus';
+import i18n from '../i18n';
 
 interface ActivityHeatmapProps {
   snapshot?: HeatmapSnapshot;
   metric: HeatmapMetric;
   span: HeatmapSpan;
   loading: boolean;
+  error?: unknown;
+  onRetry?: () => void;
   onMetric: (metric: HeatmapMetric) => void;
   onSpan: (span: HeatmapSpan) => void;
 }
 
-export function ActivityHeatmap({ snapshot, metric, span, loading, onMetric, onSpan }: ActivityHeatmapProps) {
+export function ActivityHeatmap({ snapshot, metric, span, loading, error, onRetry = () => undefined, onMetric, onSpan }: ActivityHeatmapProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; startX: number; startScrollLeft: number } | null>(null);
@@ -83,7 +87,8 @@ export function ActivityHeatmap({ snapshot, metric, span, loading, onMetric, onS
           </select>
         </div>
       </div>
-      {loading ? <div className="inline-loading">{t('正在聚合每日活动…')}</div> : (
+      {loading || error ? <QueryStatus loading={loading} error={error} onRetry={onRetry} /> : !snapshot?.points.length ?
+        <div className="chart-empty">{t('当前筛选范围内还没有可绘制的数据。')}</div> : (
         <div
           ref={scrollRef}
           className="heatmap-scroll"
@@ -133,5 +138,5 @@ function heatLevel(metric: HeatmapMetric, value: number, maxValue: number, posit
 function metricValue(metric: HeatmapMetric, value: number): string {
   if (metric === 'tokens') return `${formatTokens(value)} Token`;
   if (metric === 'active_time') return formatDuration(value);
-  return `${formatExact(value)} 个会话`;
+  return i18n.t('{{count}} 个会话', { count: value, formatted: formatExact(value) });
 }

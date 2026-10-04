@@ -3,13 +3,13 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import {
-  Activity,
   BarChart3,
   Cpu,
   Database,
   Gauge,
-  LayoutDashboard,
+  FolderKanban,
   Settings2,
+  Wrench,
   X,
 } from 'lucide-react';
 import {
@@ -30,14 +30,15 @@ import { ExportControls } from './components/ExportControls';
 import { SyncStrip } from './components/SyncStrip';
 import { UsageHero } from './components/UsageHero';
 import { WorkspaceVisibilityDialog } from './components/WorkspaceVisibilityDialog';
+import { ActionFeedback } from './components/ActionFeedback';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { QueryStatus } from './components/QueryStatus';
+import { errorMessage } from './lib/errors';
+import { invalidateUsageData as invalidateUsageQueries } from './lib/queries';
 import { formatBytes } from './lib/format';
 import type { HeatmapMetric, HeatmapSpan, UsageFilters } from './types';
 
 const ACTIVE_SYNC_PHASES = new Set(['detecting', 'planning', 'importing', 'rolling_up']);
-const USAGE_QUERY_ROOTS = [
-  'dashboard', 'workspaces', 'sessions', 'session-detail', 'usage-events',
-  'models', 'heatmap', 'tools', 'diagnostics',
-] as const;
 
 type PageId = 'overview' | 'projects' | 'sessions' | 'models' | 'activity' | 'data' | 'settings';
 
@@ -61,12 +62,11 @@ export function App() {
   const [filters, setFilters] = useState<UsageFilters>(DEFAULT_FILTERS);
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
   const [dismissedNotice, setDismissedNotice] = useState<string>();
+  const [eventError, setEventError] = useState<unknown>();
   const [heatmapMetric, setHeatmapMetric] = useState<HeatmapMetric>('tokens');
   const [heatmapSpan, setHeatmapSpan] = useState<HeatmapSpan>('year');
   const invalidateUsageData = useCallback(() => {
-    USAGE_QUERY_ROOTS.forEach((queryKey) => {
-      void queryClient.invalidateQueries({ queryKey: [queryKey] });
-    });
+    invalidateUsageQueries(queryClient);
   }, [queryClient]);
   const bootstrap = useQuery({ queryKey: ['bootstrap'], queryFn: getBootstrapStatus });
   const preferences = useQuery({ queryKey: ['app-preferences'], queryFn: getAppPreferences });
@@ -116,8 +116,14 @@ export function App() {
   });
 
   useEffect(() => {
+    if (filters.range.preset !== 'custom' || !filters.range.liveEnd) return;
+    const timer = window.setInterval(invalidateUsageData, 30_000);
+    return () => window.clearInterval(timer);
+  }, [filters.range.preset, filters.range.liveEnd, invalidateUsageData]);
+
+  useEffect(() => {
     if (!isTauriRuntime()) return undefined;
-    const unlisten = Promise.all([
+    const unlisten = Promise.allSettled([
       listen('usage-sync-completed', () => {
         invalidateUsageData();
         void queryClient.invalidateQueries({ queryKey: ['sync-status'] });
@@ -128,7 +134,11 @@ export function App() {
       listen('chronolume-open-settings', () => {
         setActivePage('settings');
       }),
-    ]);
+    ]).then((results) => {
+      const failure = results.find((result) => result.status === 'rejected');
+      if (failure?.status === 'rejected') setEventError(failure.reason);
+      return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+    });
     return () => {
       void unlisten.then((listeners) => listeners.forEach((stop) => stop()));
     };
@@ -194,21 +204,22 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">{t('跳转到主要内容')}</a>
       <aside className="sidebar" aria-label={t('主导航')}>
         <div className="brand-mark" aria-hidden="true">CL</div>
         <nav>
           <NavButton icon={<BarChart3 />} label={t('总览')} active={activePage === 'overview'} onSelect={() => setActivePage('overview')} />
-          <NavButton icon={<LayoutDashboard />} label={t('项目')} active={activePage === 'projects'} onSelect={() => setActivePage('projects')} />
+          <NavButton icon={<FolderKanban />} label={t('项目')} active={activePage === 'projects'} onSelect={() => setActivePage('projects')} />
           <NavButton icon={<Gauge />} label={t('会话')} active={activePage === 'sessions'} onSelect={() => setActivePage('sessions')} />
-          <NavButton icon={<Activity />} label={t('模型与成本')} active={activePage === 'models'} onSelect={() => setActivePage('models')} />
-          <NavButton icon={<Cpu />} label={t('工具与活动')} active={activePage === 'activity'} onSelect={() => setActivePage('activity')} />
+          <NavButton icon={<Cpu />} label={t('模型与成本')} active={activePage === 'models'} onSelect={() => setActivePage('models')} />
+          <NavButton icon={<Wrench />} label={t('工具与活动')} active={activePage === 'activity'} onSelect={() => setActivePage('activity')} />
           <NavButton icon={<Database />} label={t('数据')} active={activePage === 'data'} onSelect={() => setActivePage('data')} />
           <NavButton icon={<Settings2 />} label={t('设置')} active={activePage === 'settings'} onSelect={() => setActivePage('settings')} />
         </nav>
         <div className="sidebar-spacer" />
       </aside>
 
-      <main className="content">
+      <main id="main-content" className="content" tabIndex={-1}>
         <header className="page-heading">
           <div>
             <p className="eyebrow">{copy.eyebrow}</p>
@@ -216,12 +227,15 @@ export function App() {
             <p>{copy.description}</p>
           </div>
           <div className="header-actions">
-            <ExportControls scope={exportScope} filters={filters} allowPng={activePage === 'overview'} />
-            <span className={`status-pill${syncing ? ' syncing' : ''}`}><i />{statusLabel}</span>
+            <ExportControls scope={exportScope} filters={filters} allowPng={activePage === 'overview' && Boolean(snapshot?.trend.length)} disabled={dashboard.isFetching || !snapshot || dashboard.isError} />
+            <span className={`status-pill${syncing ? ' syncing' : ''}${dashboard.isError || sync.data?.phase === 'failed' ? ' attention' : ''}`}><i aria-hidden="true" />{statusLabel}</span>
           </div>
         </header>
 
-        <SyncStrip status={sync.data} onCancel={() => cancelMutation.mutate()} />
+        {isTauriRuntime() ? <SyncStrip status={sync.data} cancelling={cancelMutation.isPending} onCancel={() => cancelMutation.mutate()} /> :
+          <div className="preview-notice" role="note"><Database /><span>{t('浏览器预览不读取本机数据。请在桌面应用中查看用量、同步和导出。')}</span></div>}
+        <ActionFeedback error={refreshMutation.error ?? cancelMutation.error ?? eventError} />
+        {sync.isError && <QueryStatus loading={false} error={sync.error} onRetry={() => void sync.refetch()} />}
 
         {filterVisible && <DashboardFilters
             filters={filters}
@@ -229,7 +243,7 @@ export function App() {
             refreshing={dashboard.isFetching || syncing || refreshMutation.isPending}
             onChange={setFilters}
             onRefresh={refresh}
-            onManageWorkspaces={() => setWorkspaceDialogOpen(true)}
+            onManageWorkspaces={() => { saveWorkspaceVisibility.reset(); setWorkspaceDialogOpen(true); }}
           />}
 
         {activePage === 'overview' && dashboard.isLoading && !snapshot && <DashboardSkeleton />}
@@ -237,16 +251,17 @@ export function App() {
         {activePage === 'overview' && dashboard.isError && !snapshot && (
           <section className="state-card error-state" role="alert">
             <strong>{t('无法读取本地统计')}</strong>
-            <p>{dashboard.error instanceof Error ? dashboard.error.message : t('发生未知错误。')}</p>
+            <p>{errorMessage(dashboard.error)}</p>
             <button type="button" onClick={() => void dashboard.refetch()}>{t('重试查询')}</button>
           </section>
         )}
 
         {activePage === 'overview' && snapshot && (
           <>
+            {dashboard.isError && <QueryStatus loading={false} error={dashboard.error} onRetry={() => void dashboard.refetch()} />}
             {noticeKind && dismissedNotice !== noticeKind && (
               <div className="data-notice" role="status">
-                <span>{t('展示的是上次生成的快照，后台正在刷新。')}</span>
+                <span>{t(dashboard.isFetching ? '展示的是上次生成的快照，后台正在刷新。' : '当前快照已超过 5 分钟，可刷新获取最新统计。')}</span>
                 <button type="button" aria-label={t('关闭提示')} onClick={() => setDismissedNotice(noticeKind)}><X /></button>
               </div>
             )}
@@ -254,9 +269,10 @@ export function App() {
             {snapshot.dataState === 'empty' && (
               <section className="state-card empty-state">
                 <Gauge />
-                <div>
+                <div className="empty-state-copy">
                   <strong>{t('这个范围内还没有用量')}</strong>
                   <p>{t('可以扩大时间范围、清除筛选，或手动触发一次增量同步。')}</p>
+                  <button type="button" className="quiet-button" onClick={() => setFilters({ range: { preset: 'all', liveEnd: false }, archived: 'all' })}>{t('查看全部历史')}</button>
                 </div>
               </section>
             )}
@@ -266,21 +282,23 @@ export function App() {
                 metric={heatmapMetric}
                 span={heatmapSpan}
                 loading={heatmap.isLoading && !heatmap.data}
+                error={heatmap.error}
+                onRetry={() => void heatmap.refetch()}
                 onMetric={setHeatmapMetric}
                 onSpan={setHeatmapSpan}
               />
-              <Suspense fallback={<div className="skeleton chart-skeleton" />}>
+              <ErrorBoundary><Suspense fallback={<div className="skeleton chart-skeleton" role="status" aria-label={t('正在加载页面数据…')} />}>
                 <UsageTrendChart trend={snapshot.trend} granularity={snapshot.resolvedRange.granularity} />
-              </Suspense>
+              </Suspense></ErrorBoundary>
             </div>
           </>
         )}
 
-        <Suspense fallback={<DashboardSkeleton />}>
+        <ErrorBoundary key={activePage}><Suspense fallback={<DashboardSkeleton />}>
           {activePage === 'projects' && <ProjectsPage
               filters={filters}
               visibleWorkspaceIds={visibleWorkspaceIds}
-              onManageWorkspaces={() => setWorkspaceDialogOpen(true)}
+              onManageWorkspaces={() => { saveWorkspaceVisibility.reset(); setWorkspaceDialogOpen(true); }}
               onOpenWorkspace={(workspaceId) => {
                 setFilters((current) => ({
                   ...current,
@@ -296,12 +314,12 @@ export function App() {
           {activePage === 'activity' && <ActivityPage filters={filters} />}
           {activePage === 'data' && <DataPage />}
           {activePage === 'settings' && <SettingsPage />}
-        </Suspense>
+        </Suspense></ErrorBoundary>
 
         <footer className="app-footer">
-          <span>Chronolume {bootstrap.data?.appVersion ?? '2.1.8'}</span>
+          <span>Chronolume {bootstrap.data?.appVersion ?? '2.1.9'}</span>
           <span>Schema v{bootstrap.data?.schemaVersion ?? '…'}</span>
-          <span>{formatBytes(bootstrap.data?.databaseSizeBytes ?? 0)} {t('本地索引')}</span>
+          <span>{bootstrap.data ? formatBytes(bootstrap.data.databaseSizeBytes) : '—'} {t('本地索引')}</span>
           {dashboard.isFetching && <span className="footer-refreshing">{t('正在刷新查询')}</span>}
         </footer>
       </main>
@@ -309,6 +327,10 @@ export function App() {
           options={workspaceCatalog.data ?? []}
           selectedIds={visibleWorkspaceIds}
           saving={saveWorkspaceVisibility.isPending}
+          loading={workspaceCatalog.isLoading || preferences.isLoading}
+          error={workspaceCatalog.error ?? preferences.error}
+          saveError={saveWorkspaceVisibility.error}
+          onRetry={() => { void workspaceCatalog.refetch(); void preferences.refetch(); }}
           onClose={() => setWorkspaceDialogOpen(false)}
           onSave={(ids) => saveWorkspaceVisibility.mutate(ids)}
         />}
@@ -341,6 +363,7 @@ function NavButton({
       onClick={onSelect}
     >
       {icon}
+      <span className="nav-tooltip" aria-hidden="true">{label}</span>
     </button>
   );
 }

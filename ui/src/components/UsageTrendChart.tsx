@@ -12,6 +12,7 @@ import {
 import type { ResolvedRange, TrendPoint } from '../types';
 import { formatCost, formatExact } from '../lib/format';
 import { readLocalPreference, storageKeys, writeLocalPreference } from '../lib/storage';
+import i18n from '../i18n';
 
 export type TrendSeriesKey =
   | 'freshInputTokens'
@@ -44,7 +45,7 @@ export function buildChartData(
   trend: TrendPoint[],
   granularity: ResolvedRange['granularity'],
 ): ChartDatum[] {
-  const dateTime = new Intl.DateTimeFormat(undefined, {
+  const dateTime = new Intl.DateTimeFormat(i18n.resolvedLanguage, {
     month: granularity === 'hour' ? undefined : 'short',
     day: granularity === 'hour' ? undefined : 'numeric',
     hour: granularity === 'hour' ? '2-digit' : undefined,
@@ -53,7 +54,7 @@ export function buildChartData(
   return trend.map((point) => ({
     ...point,
     label: granularity === 'week'
-      ? `周 · ${dateTime.format(point.timestampMs)}`
+      ? `${i18n.t('周')} · ${dateTime.format(point.timestampMs)}`
       : dateTime.format(point.timestampMs),
   }));
 }
@@ -95,11 +96,12 @@ interface UsageTrendChartProps {
 }
 
 export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
-  const { t } = useTranslation();
-  const data = useMemo(() => buildChartData(trend, granularity), [trend, granularity]);
+  const { t, i18n } = useTranslation();
+  const data = useMemo(() => buildChartData(trend, granularity), [trend, granularity, i18n.resolvedLanguage]);
   const [visible, setVisible] = useState<Set<TrendSeriesKey>>(() =>
     deserializeSeriesVisibility(readLocalPreference(storageKeys.trendSeries)),
   );
+  const [tableOpen, setTableOpen] = useState(false);
 
   const handleToggle = (key: TrendSeriesKey) => {
     setVisible((current) => {
@@ -122,6 +124,8 @@ export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
               key={series.key}
               type="button"
               aria-pressed={visible.has(series.key)}
+              disabled={visible.has(series.key) && visible.size === 1}
+              title={visible.has(series.key) && visible.size === 1 ? t('至少保留一个趋势序列。') : undefined}
               className={visible.has(series.key) ? 'legend-item active' : 'legend-item'}
               onClick={() => handleToggle(series.key)}
             >
@@ -188,6 +192,22 @@ export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
             </AreaChart>
           </ResponsiveContainer>
         </div>
+      )}
+      {data.length > 0 && (
+        <details className="chart-data" onToggle={(event) => setTableOpen(event.currentTarget.open)}>
+          <summary>{t('查看图表数据')}</summary>
+          {tableOpen && <div className="data-table-wrap" role="region" aria-label={t('用量趋势')} tabIndex={0}>
+            <table className="data-table">
+              <thead><tr><th>{t('时间')}</th>{SERIES.filter((series) => visible.has(series.key)).map((series) => <th key={series.key}>{t(series.label)}</th>)}</tr></thead>
+              <tbody>{data.map((point) => <tr key={point.timestampMs}>
+                <td>{new Date(point.timestampMs).toLocaleString()}</td>
+                {SERIES.filter((series) => visible.has(series.key)).map((series) => <td key={series.key}>
+                  {series.key === 'estimatedCostMicrousd' ? formatCost(point[series.key]) : formatExact(point[series.key])}
+                </td>)}
+              </tr>)}</tbody>
+            </table>
+          </div>}
+        </details>
       )}
     </section>
   );

@@ -57,4 +57,16 @@ describe('cascadeFilter', () => {
     expect(onManageWorkspaces).toHaveBeenCalledOnce();
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it('keeps invalid custom dates out of queries and restores valid input', () => {
+    const onChange = vi.fn();
+    const custom = { ...filters, range: { preset: 'custom' as const, startMs: new Date('2026-01-01T12:00:32.123').getTime(), endMs: new Date('2026-01-02T12:00').getTime(), liveEnd: false } };
+    render(<DashboardFilters filters={custom} refreshing={false} onChange={onChange} onRefresh={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('结束'), { target: { value: '2025-12-31T12:00' } });
+    expect(screen.getByRole('alert')).toHaveTextContent('统计仍使用上一次有效范围');
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('结束'), { target: { value: '2026-01-03T12:00' } });
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ range: expect.objectContaining({ startMs: custom.range.startMs, endMs: new Date('2026-01-03T12:00').getTime() }) }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });

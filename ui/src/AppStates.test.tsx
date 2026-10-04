@@ -113,7 +113,7 @@ describe('App data states', () => {
 
     api.getDashboard.mockResolvedValue({ ...baseSnapshot, generatedAtMs: Date.now() - 10 * 60_000 });
     renderApp();
-    expect(await screen.findByText('展示的是上次生成的快照，后台正在刷新。')).toBeInTheDocument();
+    expect(await screen.findByText('当前快照已超过 5 分钟，可刷新获取最新统计。')).toBeInTheDocument();
   });
 
   it('shows a retryable error instead of silently substituting data', async () => {

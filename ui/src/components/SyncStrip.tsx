@@ -6,11 +6,12 @@ import { formatBytes } from '../lib/format';
 interface SyncStripProps {
   status?: SyncStatus;
   onCancel: () => void;
+  cancelling?: boolean;
 }
 
 const activePhases = new Set(['detecting', 'planning', 'importing', 'rolling_up']);
 
-export function SyncStrip({ status, onCancel }: SyncStripProps) {
+export function SyncStrip({ status, onCancel, cancelling = false }: SyncStripProps) {
   const { t } = useTranslation();
   if (!status) return null;
   const active = activePhases.has(status.phase);
@@ -44,11 +45,11 @@ export function SyncStrip({ status, onCancel }: SyncStripProps) {
             <span>{t('最后同步')} {new Date(status.lastCompletedAtMs).toLocaleString()}</span>
           )}
         </div>
-        {active && <div className="sync-track"><span style={{ width: `${progress}%` }} /></div>}
+        {active && <div className="sync-track" role="progressbar" aria-label={t('索引进度')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={status.bytesTotal > 0 || status.filesTotal > 0 ? Math.round(progress) : undefined}><span style={{ width: `${progress}%` }} /></div>}
       </div>
       {active && (
-        <button type="button" onClick={onCancel} disabled={status.cancelRequested}>
-          <X />{status.cancelRequested ? t('正在取消') : t('取消')}
+        <button type="button" onClick={onCancel} disabled={status.cancelRequested || cancelling}>
+          <X />{status.cancelRequested || cancelling ? t('正在取消') : t('取消')}
         </button>
       )}
     </section>

@@ -29,3 +29,8 @@ export function readLocalPreference(key: string): string | null {
 export function writeLocalPreference(key: string, value: string): void {
   localStorage.setItem(key, value);
 }
+
+export function readFontScale(): number {
+  const scale = Number(readLocalPreference(storageKeys.fontScale) ?? 1);
+  return Number.isFinite(scale) ? Math.max(.9, Math.min(1.35, scale)) : 1;
+}

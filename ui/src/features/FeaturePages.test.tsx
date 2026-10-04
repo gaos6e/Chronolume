@@ -27,6 +27,7 @@ const api = vi.hoisted(() => ({
   getTools: vi.fn(),
   getDiagnostics: vi.fn(),
   startSync: vi.fn(),
+  getSyncStatus: vi.fn(),
   clearAnalysis: vi.fn(),
 }));
 
@@ -62,6 +63,7 @@ describe('feature pages', () => {
     api.deleteModelPrice.mockResolvedValue({ prices: [], reprice: {} });
     api.restoreBuiltinPrice.mockResolvedValue({ prices: [], reprice: {} });
     api.startSync.mockResolvedValue({ phase: 'completed' });
+    api.getSyncStatus.mockResolvedValue({ phase: 'idle' });
     api.clearAnalysis.mockResolvedValue(undefined);
   });
 
@@ -205,12 +207,42 @@ describe('feature pages', () => {
 
     const { unmount } = renderPage(<ActivityPage filters={filters} />);
     expect(await screen.findByText('apply_patch')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('工具调用', { selector: '.stat-card span' }).parentElement).toHaveTextContent('3');
     unmount();
 
     renderPage(<DataPage />);
-    fireEvent.click(await screen.findByRole('button', { name: '修复索引' }));
+    const repair = await screen.findByRole('button', { name: '修复索引' });
+    await waitFor(() => expect(repair).toBeEnabled());
+    fireEvent.click(repair);
     await waitFor(() => expect(api.startSync).toHaveBeenCalledWith('repair'));
+  });
+
+  it('keeps maintenance disabled while indexing and never reports missing diagnostics as an error', async () => {
+    api.getDiagnostics.mockImplementation(() => new Promise(() => undefined));
+    api.getSyncStatus.mockResolvedValue({ phase: 'importing' });
+    renderPage(<DataPage />);
+    expect(screen.queryByText('异常')).not.toBeInTheDocument();
+    expect(await screen.findByText('索引正在运行。请等待完成，或在上方取消后再执行维护操作。')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '清空分析库' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '重新索引' })).toBeDisabled();
+  });
+
+  it('requires confirmation before clearing and preserves a retryable failure in the dialog', async () => {
+    api.getDiagnostics.mockResolvedValue({ sources: [], recentRuns: [], databaseIntegrityOk: true, databaseSizeBytes: 0, indexedSessions: 0, retainedUsageEvents: 0, retainedToolEvents: 0 });
+    api.clearAnalysis.mockRejectedValueOnce({ code: 'database_error', message: '分析数据库操作失败' });
+    renderPage(<DataPage />);
+    const clear = screen.getByRole('button', { name: '清空分析库' });
+    await waitFor(() => expect(clear).toBeEnabled());
+    fireEvent.click(clear);
+    const dialog = screen.getByRole('dialog', { name: '清空分析库' });
+    expect(api.clearAnalysis).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认清空' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('分析数据库操作失败');
+    expect(dialog).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认清空' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(api.clearAnalysis).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('status')).toHaveTextContent('分析库已清空');
   });
 
   it('renders the backend-provided analytics directory for Windows and macOS', async () => {

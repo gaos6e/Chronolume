@@ -2,14 +2,14 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { initializeTheme } from './lib/theme';
-import { readLocalPreference, storageKeys } from './lib/storage';
+import { readFontScale, readLocalPreference, storageKeys } from './lib/storage';
 import './i18n';
 import './styles.css';
 
 initializeTheme();
-const storedScale = Number(readLocalPreference(storageKeys.fontScale) ?? 1);
-document.documentElement.style.fontSize = `${Math.max(.9, Math.min(1.35, storedScale)) * 100}%`;
+document.documentElement.style.fontSize = `${readFontScale() * 100}%`;
 document.documentElement.lang = readLocalPreference(storageKeys.language) === 'en' ? 'en' : 'zh-CN';
 
 const queryClient = new QueryClient({
@@ -30,7 +30,7 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      <ErrorBoundary><App /></ErrorBoundary>
     </QueryClientProvider>
   </StrictMode>,
 );

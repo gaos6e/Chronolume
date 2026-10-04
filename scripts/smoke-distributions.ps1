@@ -3,6 +3,7 @@
 param(
   [string]$InstallerPath,
   [string]$PortableArchive,
+  [string]$InstallDirectory,
   [string]$ReportPath
 )
 
@@ -35,6 +36,11 @@ if ($existing.Count -gt 0) {
 function Test-AppWindow {
   param([Parameter(Mandatory)][string]$Executable)
 
+  $actualVersion = (Get-Item -LiteralPath $Executable).VersionInfo.ProductVersion
+  if ($actualVersion -ne $version) {
+    throw "Application version differs from the release: expected $version, received $actualVersion ($Executable)"
+  }
+
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
   $process = Start-Process -FilePath $Executable -PassThru
   try {
@@ -54,6 +60,8 @@ function Test-AppWindow {
     $watch.Stop()
     [pscustomobject]@{
       Executable = $Executable
+      Version = $actualVersion
+      Sha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash
       WindowReadyMs = [Math]::Round($watch.Elapsed.TotalMilliseconds, 2)
       WorkingSetBytes = $process.WorkingSet64
       PrivateBytes = $process.PrivateMemorySize64
@@ -92,12 +100,22 @@ function Remove-SmokeDirectory {
   }
 }
 
-$installer = Start-Process -FilePath $InstallerPath -ArgumentList '/S' -PassThru -Wait
+$installerArguments = @('/S')
+if ($InstallDirectory) {
+  $InstallDirectory = [System.IO.Path]::GetFullPath($InstallDirectory)
+  # NSIS requires /D to be the final argument. Keep an existing user-selected install path.
+  $installerArguments += "/D=$InstallDirectory"
+}
+$installer = Start-Process -FilePath $InstallerPath -ArgumentList $installerArguments -WindowStyle Hidden -PassThru -Wait
 if ($installer.ExitCode -ne 0) {
   throw "NSIS installer exited with code $($installer.ExitCode)."
 }
 
-$installedExe = Join-Path $env:LOCALAPPDATA 'Chronolume\chronolume.exe'
+$installedExe = if ($InstallDirectory) {
+  Join-Path $InstallDirectory 'chronolume.exe'
+} else {
+  Join-Path $env:LOCALAPPDATA 'Chronolume\chronolume.exe'
+}
 if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
   throw "Installed executable is missing: $installedExe"
 }

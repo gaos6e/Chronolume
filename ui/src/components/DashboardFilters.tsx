@@ -1,5 +1,6 @@
 import { CalendarRange, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useState } from 'react';
 import type {
   ArchiveFilter,
   DashboardSnapshot,
@@ -50,7 +51,11 @@ export function DashboardFilters({
   onManageWorkspaces = () => undefined,
 }: DashboardFiltersProps) {
   const { t } = useTranslation();
+  const [draft, setDraft] = useState<{ start?: string; end?: string }>();
+  const [rangeError, setRangeError] = useState<string>();
   const selectRange = (preset: RangePreset) => {
+    setDraft(undefined);
+    setRangeError(undefined);
     const nextRange =
       preset === 'custom'
         ? {
@@ -64,11 +69,19 @@ export function DashboardFilters({
   };
 
   const updateCustomTime = (field: 'startMs' | 'endMs', value: string) => {
-    const timestamp = new Date(value).getTime();
-    if (!Number.isFinite(timestamp)) return;
+    const nextDraft = { ...draft, [field === 'startMs' ? 'start' : 'end']: value };
+    const startMs = nextDraft.start == null ? filters.range.startMs : new Date(nextDraft.start).getTime();
+    const endMs = filters.range.liveEnd ? Date.now() : nextDraft.end == null ? filters.range.endMs : new Date(nextDraft.end).getTime();
+    if (startMs == null || endMs == null || !Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) {
+      setDraft(nextDraft);
+      setRangeError('请选择有效时间，结束时间必须晚于开始时间。');
+      return;
+    }
+    setDraft(undefined);
+    setRangeError(undefined);
     onChange({
       ...filters,
-      range: { ...filters.range, preset: 'custom', [field]: timestamp },
+      range: { ...filters.range, preset: 'custom', startMs, endMs },
     });
   };
 
@@ -168,7 +181,9 @@ export function DashboardFilters({
             <span>{t('开始')}</span>
             <input
               type="datetime-local"
-              value={toLocalInput(filters.range.startMs)}
+              value={draft?.start ?? toLocalInput(filters.range.startMs)}
+              aria-invalid={Boolean(rangeError)}
+              aria-describedby={rangeError ? 'range-error' : undefined}
               onChange={(event) => updateCustomTime('startMs', event.target.value)}
             />
           </label>
@@ -176,7 +191,9 @@ export function DashboardFilters({
             <span>{t('结束')}</span>
             <input
               type="datetime-local"
-              value={toLocalInput(filters.range.endMs)}
+              value={draft?.end ?? toLocalInput(filters.range.endMs)}
+              aria-invalid={Boolean(rangeError)}
+              aria-describedby={rangeError ? 'range-error' : undefined}
               onChange={(event) => updateCustomTime('endMs', event.target.value)}
               disabled={filters.range.liveEnd}
             />
@@ -185,17 +202,26 @@ export function DashboardFilters({
             <input
               type="checkbox"
               checked={filters.range.liveEnd}
-              onChange={(event) =>
+              onChange={(event) => {
+                const startMs = draft?.start == null ? filters.range.startMs : new Date(draft.start).getTime();
+                const endMs = Date.now();
+                if (startMs == null || !Number.isFinite(startMs) || startMs >= endMs) {
+                  setRangeError('请选择有效时间，结束时间必须晚于开始时间。');
+                  return;
+                }
+                setDraft(undefined);
+                setRangeError(undefined);
                 onChange({
                   ...filters,
-                  range: { ...filters.range, liveEnd: event.target.checked },
-                })
-              }
+                  range: { ...filters.range, startMs, endMs, liveEnd: event.target.checked },
+                });
+              }}
             />
             {t('结束时间跟随现在')}
           </label>
         </div>
       )}
+      {filters.range.preset === 'custom' && rangeError && <p id="range-error" className="form-error filter-error" role="alert">{t(rangeError)} {t('统计仍使用上一次有效范围。')}</p>}
     </section>
   );
 }

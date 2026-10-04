@@ -27,6 +27,12 @@ export function formatDuration(milliseconds: number): string {
   return `${rest}m`;
 }
 
+export function formatElapsed(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${Math.round(milliseconds)} ms`;
+  if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(1)} s`;
+  return formatDuration(milliseconds);
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;

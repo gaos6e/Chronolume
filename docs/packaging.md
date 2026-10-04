@@ -26,11 +26,25 @@ npm run tauri:build:windows
 
 ```text
 src-tauri\target\release\chronolume.exe
-src-tauri\target\release\bundle\nsis\Chronolume_2.1.0_x64-setup.exe
-src-tauri\target\release\bundle\portable\Chronolume-2.1.0-windows-x64-portable.zip
+src-tauri\target\release\bundle\nsis\Chronolume_<版本>_x64-setup.exe
+src-tauri\target\release\bundle\portable\Chronolume-<版本>-windows-x64-portable.zip
 ```
 
 便携 ZIP 包含同一个 Release EXE、README、项目 `LICENSE` 和由实际锁文件生成的 `THIRD_PARTY_LICENSES.txt`，不附带分析数据库或用户数据。三个性能 benchmark 由显式 Cargo feature 管理，仅供开发验证，安装器和便携包都不得包含它们；smoke 会审计安装目录只能出现 `chronolume.exe` 与 `uninstall.exe`。`build-portable.ps1` 会在压缩前重新执行许可证审计；旧的手写 `THIRD_PARTY_NOTICES.md` 不再是输入。安装器当前未签名，Windows SmartScreen 可能在建立签名信誉前显示警告。运行时目录由 Windows 平台路径解析，不依赖源码仓库位置。
+
+## 2.1.9 验证记录（2026-10-04）
+
+完成 Release EXE、NSIS 安装器与便携 ZIP 构建，保留原有自定义安装目录及分析数据库，更新桌面快捷方式。`smoke-distributions.ps1` 可通过 `-InstallDirectory` 指定既有目录；默认仍使用当前用户的标准安装目录。启动前核对可执行文件版本，报告同时记录版本与 SHA-256。
+
+| 产物 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `chronolume.exe` | 10,413,056 | `F410251521AC219926222E50451C4C50BA04CE71CB80BF6FAA91CFED2C7EA6A2` |
+| `Chronolume_2.1.9_x64-setup.exe` | 3,222,283 | `AB18ECB6A4E05B1B8ED1BEDE9F9393256EAB04C36A6A7DD7DB71391B52CCC290` |
+| `Chronolume-2.1.9-windows-x64-portable.zip` | 4,355,222 | `882A49A7FD7EA5C82B47F26240AA9042BEA196C4D985E8E044CECA9F0D8CCC56` |
+
+NSIS 静默安装退出码为 0；安装目录仅含应用与卸载器两个 EXE。最终检查中，安装版在 326.42 ms、便携解压版在 284.46 ms 创建窗口；该数字仅表示窗口出现，不代表数据加载完成或性能提升。两者均确认版本为 2.1.9，验证报告由发布暂存脚本校验。
+
+NSIS 会将应用中的 Tauri 分发标记从 `UNK` 改为 `NSS`，因此安装目录 EXE 与独立 EXE 的原始哈希不同。还原这三个标记字节后，二者完整内容一致。许可证文件重生成成功，未修改应用依赖版本。
 
 ## 2.1.0 验证记录
 
