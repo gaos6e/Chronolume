@@ -32,6 +32,18 @@ src-tauri\target\release\bundle\portable\Chronolume-<版本>-windows-x64-portabl
 
 便携 ZIP 包含同一个 Release EXE、README、项目 `LICENSE` 和由实际锁文件生成的 `THIRD_PARTY_LICENSES.txt`，不附带分析数据库或用户数据。三个性能 benchmark 由显式 Cargo feature 管理，仅供开发验证，安装器和便携包都不得包含它们；smoke 会审计安装目录只能出现 `chronolume.exe` 与 `uninstall.exe`。`build-portable.ps1` 会在压缩前重新执行许可证审计；旧的手写 `THIRD_PARTY_NOTICES.md` 不再是输入。安装器当前未签名，Windows SmartScreen 可能在建立签名信誉前显示警告。运行时目录由 Windows 平台路径解析，不依赖源码仓库位置。
 
+## 2.1.10 验证记录（2026-10-07）
+
+应用源码提交 `542b9ab4c945498e89324c3278af757ef656aeb2`（`v2.1.10`）。版本一致性、前端类型检查/Lint/40 项测试/生产构建及 Rust 格式/检查/Clippy/89 项测试通过；发布提交的 Windows 与 macOS CI 均通过。
+
+| 产物 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `chronolume.exe` | 10,460,672 | `3B8DDE73EA7CF75A8E9AA2C5636EA07236473A77A6057B05DCEB69607A287B50` |
+| `Chronolume_2.1.10_x64-setup.exe` | 3,244,684 | `C51E36A1761EA95D1705D7344FFBDFB977DC98DC9DA82050E4FBC9405C332AF2` |
+| `Chronolume-2.1.10-windows-x64-portable.zip` | 4,377,901 | `6C7E29B248E04C66CBB631B06C22DA6D922258AE2EE52F5C597C898B8159BF0A` |
+
+许可证清单按本版锁文件重新生成，并在最终 NSIS 打包前更新。静默安装退出码为 0；原安装目录 `D:\software\Chronolume` 中的应用版本为 2.1.10，应用与卸载器两个 EXE 的审计通过。安装版与便携版分别在 328.10 ms、321.51 ms 创建窗口；这些数字只证明启动检查，不代表查询性能变化。两种分发的版本、哈希、ZIP 条目与结构化 smoke 记录均已由暂存脚本校验。
+
 ## 2.1.9 验证记录（2026-10-04）
 
 完成 Release EXE、NSIS 安装器与便携 ZIP 构建，保留原有自定义安装目录及分析数据库，更新桌面快捷方式。`smoke-distributions.ps1` 可通过 `-InstallDirectory` 指定既有目录；默认仍使用当前用户的标准安装目录。启动前核对可执行文件版本，报告同时记录版本与 SHA-256。
