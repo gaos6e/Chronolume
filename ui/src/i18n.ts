@@ -66,6 +66,7 @@ const english: Record<string, string> = {
   'TPS': 'TPS', '平均 TPS': 'Average TPS',
   'TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。': 'TPS = output tokens (including reasoning) / active seconds; active time includes tool calls and other waits.',
   '模型平均 TPS = 总输出 Token ÷ 总活跃秒数，按时长加权。': 'Average model TPS = total output tokens / total active seconds, weighted by active time.',
+  '已扣除可识别的用户答复等待。': 'Identifiable pauses for user answers are excluded.',
   '估算成本': 'Estimated cost', '部分未定价': 'Partially unpriced', '含未定价事件': 'Contains unpriced events',
   '新增输入': 'Fresh input', '输出': 'Output', '缓存读取': 'Cache read', '推理': 'Reasoning',
   '缓存命中率': 'Cache hit rate', '日均 Token': 'Daily avg tokens', '日均成本': 'Daily avg cost',

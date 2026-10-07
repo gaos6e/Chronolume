@@ -146,6 +146,12 @@ fn parse_value(
         return Vec::new();
     };
     let occurred_at_ms = parse_timestamp(value.get("timestamp"));
+    if let Some(time) = occurred_at_ms {
+        if event_type == "turn_context" && cursor.open_task_started_at_ms.is_none() {
+            cursor.user_wait_timing.seal(time);
+        }
+        cursor.user_wait_timing.observe(event_type, payload, time);
+    }
 
     match event_type {
         "session_meta" => parse_session_metadata(
@@ -271,14 +277,15 @@ fn parse_event_message(
     match payload.get("type").and_then(Value::as_str) {
         Some("token_count") => parse_token_count(payload, occurred_at_ms, byte_offset, cursor),
         Some("task_started") => {
+            if let Some(time) = occurred_at_ms {
+                cursor.user_wait_timing.start_task(time);
+            }
             cursor.open_task_turn_id = payload
                 .get("turn_id")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            cursor.open_task_started_at_ms = payload
-                .get("started_at")
-                .and_then(|value| parse_timestamp(Some(value)))
-                .or(occurred_at_ms);
+            cursor.open_task_started_at_ms =
+                task_timestamp(payload.get("started_at"), occurred_at_ms);
             Vec::new()
         }
         Some("task_complete" | "task_completed" | "turn_aborted") => {
@@ -377,10 +384,7 @@ fn parse_task_end(
     byte_offset: u64,
     cursor: &mut SourceCursor,
 ) -> Vec<ParsedRecord> {
-    let ended_at_ms = payload
-        .get("completed_at")
-        .and_then(|value| parse_timestamp(Some(value)))
-        .or(occurred_at_ms);
+    let ended_at_ms = task_timestamp(payload.get("completed_at"), occurred_at_ms);
     let Some(ended_at_ms) = ended_at_ms else {
         return Vec::new();
     };
@@ -404,18 +408,32 @@ fn parse_task_end(
         return Vec::new();
     }
     let active_ms = duration_ms.unwrap_or_else(|| (ended_at_ms - started_at_ms) as u64);
-    if matching_open {
-        cursor.open_task_turn_id = None;
-        cursor.open_task_started_at_ms = None;
+    if !matching_open {
+        return vec![ParsedRecord::Activity(ActivitySegment {
+            byte_offset,
+            event_ordinal: next_ordinal(cursor),
+            started_at_ms,
+            ended_at_ms,
+            active_ms,
+        })];
     }
-    let ordinal = next_ordinal(cursor);
-    vec![ParsedRecord::Activity(ActivitySegment {
-        byte_offset,
-        event_ordinal: ordinal,
-        started_at_ms,
-        ended_at_ms,
-        active_ms,
-    })]
+    let pieces = cursor
+        .user_wait_timing
+        .active_pieces(started_at_ms, ended_at_ms, active_ms);
+    cursor.open_task_turn_id = None;
+    cursor.open_task_started_at_ms = None;
+    pieces
+        .into_iter()
+        .map(|(interval, active_ms)| {
+            ParsedRecord::Activity(ActivitySegment {
+                byte_offset,
+                event_ordinal: next_ordinal(cursor),
+                started_at_ms: interval.start,
+                ended_at_ms: interval.end,
+                active_ms,
+            })
+        })
+        .collect()
 }
 
 fn parse_tool_call(
@@ -531,6 +549,23 @@ fn delta_from_cursor(current: &TokenValues, cursor: &SourceCursor) -> TokenValue
             .reasoning
             .saturating_sub(cursor.cumulative_reasoning_tokens),
     }
+}
+
+fn task_timestamp(value: Option<&Value>, recorded_at_ms: Option<i64>) -> Option<i64> {
+    let parsed = parse_timestamp(value).or(recorded_at_ms)?;
+    // Codex's numeric task timestamps may have second precision. The same
+    // record's timestamp retains the milliseconds needed to clip user waits.
+    if value
+        .and_then(Value::as_i64)
+        .is_some_and(|value| value.abs() < 100_000_000_000)
+    {
+        if let Some(recorded) = recorded_at_ms {
+            if (0..1000).contains(&recorded.saturating_sub(parsed)) {
+                return Some(recorded);
+            }
+        }
+    }
+    Some(parsed)
 }
 
 fn parse_timestamp(value: Option<&Value>) -> Option<i64> {
@@ -874,6 +909,106 @@ mod tests {
             .unwrap();
         assert_eq!(segment.active_ms, 7000);
         assert_eq!(segment.ended_at_ms - segment.started_at_ms, 7000);
+    }
+
+    #[test]
+    fn user_wait_resumes_across_append_without_losing_millisecond_precision_or_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("user-wait.jsonl");
+        let base = DateTime::parse_from_rfc3339("2026-07-10T01:00:00Z")
+            .unwrap()
+            .timestamp();
+        let before = [
+            json!({"timestamp":"2026-07-10T01:00:00.250Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":base}}),
+            json!({"timestamp":"2026-07-10T01:00:01.750Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"question","arguments":"PRIVATE_QUESTION"}}),
+        ];
+        std::fs::write(
+            &path,
+            before.iter().map(line).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let (first, outcome) = run(&path, ChangeAction::Replay, SourceCursor::default());
+        assert!(
+            !first
+                .iter()
+                .any(|record| matches!(record, ParsedRecord::Activity(_)))
+        );
+        let after = [
+            json!({"timestamp":"2026-07-10T01:00:04.800Z","type":"response_item","payload":{"type":"message","role":"user","content":"PRIVATE_ANSWER"}}),
+            json!({"timestamp":"2026-07-10T01:00:04.850Z","type":"response_item","payload":{"type":"function_call_output","call_id":"question","output":"PRIVATE_ANSWER"}}),
+            json!({"timestamp":"2026-07-10T01:00:05.250Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":base + 5,"duration_ms":5000}}),
+        ];
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all((after.iter().map(line).collect::<Vec<_>>().join("\n") + "\n").as_bytes())
+            .unwrap();
+        let (records, final_outcome) = run(&path, ChangeAction::Append, outcome.cursor);
+        let activity: Vec<_> = records
+            .iter()
+            .filter_map(|record| {
+                if let ParsedRecord::Activity(segment) = record {
+                    Some(segment)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(activity.len(), 2);
+        assert_eq!(
+            activity
+                .iter()
+                .map(|segment| segment.active_ms)
+                .sum::<u64>(),
+            1950
+        );
+        assert_eq!(activity[0].started_at_ms, base * 1000 + 250);
+        assert_eq!(activity[1].started_at_ms, base * 1000 + 4800);
+        assert_eq!(activity[1].ended_at_ms, base * 1000 + 5250);
+        assert!(!format!("{records:?}{:?}", final_outcome.cursor).contains("PRIVATE_"));
+        let (replayed, _) = run(&path, ChangeAction::Replay, SourceCursor::default());
+        let replayed_activity: Vec<_> = replayed
+            .iter()
+            .filter_map(|record| {
+                if let ParsedRecord::Activity(segment) = record {
+                    Some(segment)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(activity, replayed_activity);
+    }
+
+    #[test]
+    fn aborted_question_excludes_wait_and_unrelated_turn_end_keeps_checkpoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("abort.jsonl");
+        let input = [
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"own"}}),
+            json!({"timestamp":"2026-07-10T01:00:02Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"question"}}),
+            json!({"timestamp":"2026-07-10T01:00:04Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"other","duration_ms":1000}}),
+            json!({"timestamp":"2026-07-10T01:00:06Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"own"}}),
+        ];
+        std::fs::write(
+            &path,
+            input.iter().map(line).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let (records, outcome) = run(&path, ChangeAction::Replay, SourceCursor::default());
+        let durations: Vec<_> = records
+            .iter()
+            .filter_map(|record| {
+                if let ParsedRecord::Activity(segment) = record {
+                    Some(segment.active_ms)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(durations, vec![1000, 2000]);
+        assert!(outcome.cursor.open_task_started_at_ms.is_none());
     }
 
     #[test]

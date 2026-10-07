@@ -12,7 +12,7 @@ import type { UsageFilters } from '../../types';
 
 export function SessionsPage({ filters }: { filters: UsageFilters }) {
   const { t } = useTranslation();
-  const tpsDescription = t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。');
+  const tpsDescription = `${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')} ${t('已扣除可识别的用户答复等待。')}`;
   const list = useListState(filters, 'recent');
   const [selectedId, setSelectedId] = useState<string>();
   const [eventPage, setEventPage] = useState(0);

@@ -28,7 +28,7 @@ const EMPTY_PRICE: ModelPriceInput = {
 
 export function ModelsPage({ filters }: { filters: UsageFilters }) {
   const { t } = useTranslation();
-  const tpsDescription = `${t('模型平均 TPS = 总输出 Token ÷ 总活跃秒数，按时长加权。')} ${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')}`;
+  const tpsDescription = `${t('模型平均 TPS = 总输出 Token ÷ 总活跃秒数，按时长加权。')} ${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')} ${t('已扣除可识别的用户答复等待。')}`;
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<'usage' | 'prices'>('usage');
   const list = useListState(filters, 'name');

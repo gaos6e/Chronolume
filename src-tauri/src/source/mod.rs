@@ -1,6 +1,7 @@
 mod jsonl;
 mod logs_db;
 mod state_db;
+pub(crate) mod user_wait;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::Metadata;
@@ -14,11 +15,9 @@ use walkdir::WalkDir;
 use crate::activity::{OperationKind, ToolCategory};
 use crate::error::{AppError, AppResult};
 
-// v8 uses per-event fork token usage when cumulative totals include parent
-// history. Replaying every older JSONL checkpoint removes stale model and
-// daily aggregates that can otherwise remain internally consistent but
-// disagree with their retained source events.
-pub const PARSER_VERSION: i64 = 8;
+// Replaying older JSONL checkpoints corrects activity and TPS summaries that
+// previously included pauses for user answers.
+pub const PARSER_VERSION: i64 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,6 +75,7 @@ pub struct SourceCursor {
     /// The safe offset is inside a copied parent transcript and must skip
     /// records until the owning fork's session metadata appears again.
     pub contains_embedded_history: bool,
+    pub user_wait_timing: user_wait::UserWaitTiming,
 }
 
 #[derive(Debug, Clone)]

@@ -10,6 +10,7 @@ use crate::error::{AppError, AppResult};
 use crate::pricing::{
     PriceQuote, PriceableTokens, PricingCatalog, is_statistics_excluded_model, normalize_model_id,
 };
+use crate::source::user_wait::{TimeInterval, UserWaitTiming, merge_intervals, subtract_intervals};
 use crate::source::{
     ChangeAction, CodexSource, ModelChanged, PARSER_VERSION, ParsedRecord, SessionMetadata,
     SourceChange, SourceCheckpoint, SourceCursor, SourceKind, StateSessionMetadata, StreamOutcome,
@@ -46,7 +47,7 @@ impl UsageStore {
                         cumulative_input_tokens, cumulative_cached_input_tokens,
                         cumulative_output_tokens, cumulative_reasoning_tokens,
                         relevant_event_ordinal, open_task_turn_id, open_task_started_at_ms,
-                        logs_rowid_watermark, contains_embedded_history
+                        logs_rowid_watermark, contains_embedded_history, user_wait_timing_json
                  FROM source_files
                  WHERE source_kind IN ('session', 'archived_session', 'state_db', 'logs_db')",
             )?;
@@ -76,6 +77,14 @@ impl UsageStore {
                         open_task_started_at_ms: row.get(19)?,
                         logs_rowid_watermark: nonnegative_u64(row.get::<_, i64>(20)?),
                         contains_embedded_history: row.get::<_, i64>(21)? != 0,
+                        user_wait_timing: serde_json::from_str(&row.get::<_, String>(22)?)
+                            .map_err(|error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    22,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(error),
+                                )
+                            })?,
                     },
                 })
             })?;
@@ -187,12 +196,17 @@ impl UsageStore {
             if let Some(session_id) = session_id.as_deref() {
                 rebuild_session_model_segments(transaction, session_id)
                     .map_err(|error| ingest_stage("model_segments", error))?;
+                let mut user_waits =
+                    stored_user_waits(transaction, session_id, Some(source_file_id))?;
+                user_waits.extend(outcome.cursor.user_wait_timing.excluded_intervals());
+                let user_waits = merge_intervals(user_waits);
                 rebuild_fallback_activity(
                     transaction,
                     session_id,
                     change.action,
                     idle_gap_ms,
                     timezone,
+                    &user_waits,
                 )
                 .map_err(|error| ingest_stage("fallback_activity", error))?;
                 recompute_session_summary(transaction, session_id, &outcome)
@@ -308,12 +322,14 @@ impl UsageStore {
                 return Ok(());
             }
             rebuild_session_model_segments(transaction, session_id)?;
+            let user_waits = stored_user_waits(transaction, session_id, None)?;
             rebuild_fallback_activity(
                 transaction,
                 session_id,
                 ChangeAction::Replay,
                 idle_gap_ms,
                 timezone,
+                &user_waits,
             )?;
             recompute_session_summary(
                 transaction,
@@ -370,10 +386,10 @@ fn upsert_source_file(
                 cumulative_input_tokens, cumulative_cached_input_tokens,
                 cumulative_output_tokens, cumulative_reasoning_tokens,
                 relevant_event_ordinal, open_task_turn_id, open_task_started_at_ms,
-                logs_rowid_watermark, parser_version, status, last_seen_at_ms
+                logs_rowid_watermark, parser_version, status, last_seen_at_ms, user_wait_timing_json
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
              )
              ON CONFLICT(source_key) DO UPDATE SET
                 relative_path = excluded.relative_path,
@@ -409,6 +425,8 @@ fn upsert_source_file(
                 PARSER_VERSION,
                 status,
                 now_ms(),
+                serde_json::to_string(&change.cursor.user_wait_timing)
+                    .map_err(|_| AppError::database())?,
             ],
             |row| row.get(0),
         )
@@ -433,7 +451,8 @@ fn mark_source_ready(
             relevant_event_ordinal = ?17, open_task_turn_id = ?18,
             open_task_started_at_ms = ?19, logs_rowid_watermark = ?20, parser_version = ?21,
             contains_embedded_history = ?22,
-            status = 'ready', last_error_code = NULL, last_seen_at_ms = ?23
+            status = 'ready', last_error_code = NULL, last_seen_at_ms = ?23,
+            user_wait_timing_json = ?24
          WHERE id = ?1",
         params![
             source_file_id,
@@ -459,6 +478,7 @@ fn mark_source_ready(
             PARSER_VERSION,
             i64::from(cursor.contains_embedded_history),
             now_ms(),
+            serde_json::to_string(&cursor.user_wait_timing).map_err(|_| AppError::database())?,
         ],
     )?;
     Ok(())
@@ -1171,12 +1191,32 @@ fn apply_tool_event(
     Ok(())
 }
 
+fn stored_user_waits(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    exclude_source_file_id: Option<i64>,
+) -> AppResult<Vec<TimeInterval>> {
+    let mut statement = transaction
+        .prepare("SELECT user_wait_timing_json FROM source_files WHERE session_id = ?1 AND (?2 IS NULL OR id <> ?2)")?;
+    let values = statement.query_map(params![session_id, exclude_source_file_id], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut intervals = Vec::new();
+    for value in values {
+        let timing: UserWaitTiming =
+            serde_json::from_str(&value?).map_err(|_| AppError::database())?;
+        intervals.extend(timing.excluded_intervals());
+    }
+    Ok(merge_intervals(intervals))
+}
+
 fn rebuild_fallback_activity(
     transaction: &Transaction<'_>,
     session_id: &str,
     action: ChangeAction,
     idle_gap_ms: u64,
     timezone: Tz,
+    user_waits: &[TimeInterval],
 ) -> AppResult<()> {
     let earliest_detail: Option<i64> = transaction.query_row(
         "SELECT MIN(occurred_at_ms) FROM usage_events WHERE session_id = ?1",
@@ -1224,33 +1264,46 @@ fn rebuild_fallback_activity(
             })?
             .collect::<Result<Vec<_>, _>>()?
     };
-    for (index, pair) in points.windows(2).enumerate() {
+    for pair in points.windows(2) {
         let started = pair[0].0;
         let ended = pair[1].0;
         let gap = ended.saturating_sub(started);
-        if gap <= 0 || gap as u64 > idle_gap_ms {
+        if gap <= 0 {
             continue;
         }
-        let day = day_context(started, timezone)?;
-        transaction.execute(
-            "INSERT OR REPLACE INTO activity_segments (
+        let pieces = subtract_intervals(
+            &[TimeInterval {
+                start: started,
+                end: ended,
+            }],
+            user_waits,
+        );
+        if pieces.iter().map(|piece| piece.duration_ms()).sum::<u64>() > idle_gap_ms {
+            continue;
+        }
+        for piece in pieces {
+            let day = day_context(piece.start, timezone)?;
+            transaction.execute(
+                "INSERT OR REPLACE INTO activity_segments (
                 session_id, segment_index, started_at_ms, ended_at_ms, active_ms,
                 method, is_estimate, local_date, timezone_id, model_provider,
                 model_raw, pricing_model_id
              ) VALUES (?1, ?2, ?3, ?4, ?5, 'idle_estimate', 1, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                session_id,
-                2_000_000_000_i64.saturating_add(index as i64),
-                started,
-                ended,
-                gap,
-                day.local_date,
-                day.timezone_id,
-                pair[0].1,
-                pair[0].2,
-                pair[0].3,
-            ],
-        )?;
+                params![
+                    session_id,
+                    // Time identity survives retention and splitting around user waits.
+                    2_000_000_000_i64.saturating_add(piece.start),
+                    piece.start,
+                    piece.end,
+                    to_i64(piece.duration_ms()),
+                    day.local_date,
+                    day.timezone_id,
+                    pair[0].1,
+                    pair[0].2,
+                    pair[0].3,
+                ],
+            )?;
+        }
     }
     Ok(())
 }
@@ -1743,6 +1796,251 @@ mod tests {
 
     fn json_line(value: Value) -> String {
         serde_json::to_string(&value).unwrap()
+    }
+
+    #[test]
+    fn user_wait_checkpoint_survives_restart_and_corrects_daily_tps_and_history() {
+        let codex = tempfile::tempdir().unwrap();
+        let sessions = codex.path().join("sessions/2026/07/10");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let source_path = sessions.join("rollout-user-wait.jsonl");
+        let prefix = [
+            json!({"timestamp":"2026-07-10T23:59:50Z","type":"session_meta","payload":{"id":"wait-session","cwd":"C:/workspace/demo","model_provider":"openai"}}),
+            json!({"timestamp":"2026-07-10T23:59:50Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-07-10T23:59:50Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn"}}),
+            json!({"timestamp":"2026-07-10T23:59:55Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":100,"reasoning_output_tokens":20}}}}),
+            json!({"timestamp":"2026-07-10T23:59:55Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"question","arguments":"PRIVATE_QUESTION"}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(&source_path, prefix).unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("usage.sqlite3");
+        let source = FsCodexSource::new(codex.path());
+        let store = UsageStore::open(&db_path).unwrap();
+        store
+            .apply_source_change(
+                &source,
+                &source.plan(&[]).unwrap().changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        drop(store);
+        let store = UsageStore::open(&db_path).unwrap();
+        let suffix = [
+            json!({"timestamp":"2026-07-11T00:10:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"question","output":"PRIVATE_ANSWER"}}),
+            json!({"timestamp":"2026-07-11T00:10:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"output_tokens":200,"reasoning_output_tokens":40}}}}),
+            json!({"timestamp":"2026-07-11T00:10:05Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn","duration_ms":615000}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        OpenOptions::new()
+            .append(true)
+            .open(&source_path)
+            .unwrap()
+            .write_all(suffix.as_bytes())
+            .unwrap();
+        let plan = source.plan(&store.source_checkpoints().unwrap()).unwrap();
+        assert_eq!(plan.changes[0].action, ChangeAction::Append);
+        store
+            .apply_source_change(
+                &source,
+                &plan.changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        store.with_reader(|connection| {
+            let active: i64 = connection.query_row("SELECT active_ms FROM sessions WHERE id = 'wait-session'", [], |row| row.get(0))?;
+            assert_eq!(active, 10_000);
+            let mut statement = connection.prepare("SELECT local_date, active_ms FROM session_daily_usage WHERE session_id = 'wait-session' ORDER BY local_date")?;
+            let daily = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(daily, vec![("2026-07-10".into(), 5000), ("2026-07-11".into(), 5000)]);
+            let timing: String = connection.query_row("SELECT user_wait_timing_json FROM source_files", [], |row| row.get(0))?;
+            assert!(!timing.contains("PRIVATE_"));
+            Ok(())
+        }).unwrap();
+        let query = crate::query::UsageQuery::new(Arc::new(store.clone()), chrono_tz::UTC);
+        let mut request: crate::query::ListQuery = serde_json::from_value(
+            json!({"filters":{"range":{"preset":"all"},"model":"gpt-5.6-sol"}}),
+        )
+        .unwrap();
+        assert_eq!(
+            query.sessions(&request).unwrap().items[0].tokens_per_second,
+            Some(20.0)
+        );
+        assert_eq!(
+            query
+                .session_detail("wait-session")
+                .unwrap()
+                .session
+                .tokens_per_second,
+            Some(20.0)
+        );
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(20.0)
+        );
+        request.filters.range = serde_json::from_value(json!({"preset":"custom","startMs":Utc.with_ymd_and_hms(2026,7,11,0,0,0).unwrap().timestamp_millis(),"endMs":Utc.with_ymd_and_hms(2026,7,12,0,0,0).unwrap().timestamp_millis()})).unwrap();
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(20.0)
+        );
+        store
+            .with_writer(|transaction| {
+                transaction.execute(
+                    "UPDATE source_files SET parser_version = ?1",
+                    [PARSER_VERSION - 1],
+                )?;
+                transaction.execute(
+                    "UPDATE sessions SET active_ms = 615000 WHERE id = 'wait-session'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let upgrade = source.plan(&store.source_checkpoints().unwrap()).unwrap();
+        assert_eq!(upgrade.changes[0].action, ChangeAction::Replay);
+        store
+            .apply_source_change(
+                &source,
+                &upgrade.changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(
+            query
+                .session_detail("wait-session")
+                .unwrap()
+                .session
+                .tokens_per_second,
+            Some(20.0)
+        );
+        assert_eq!(
+            store.source_checkpoints().unwrap()[0]
+                .cursor
+                .user_wait_timing
+                .excluded_intervals()
+                .len(),
+            1
+        );
+        store
+            .with_writer(|transaction| {
+                transaction.execute("DELETE FROM usage_events", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            query
+                .session_detail("wait-session")
+                .unwrap()
+                .retained_event_count,
+            0
+        );
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(20.0)
+        );
+    }
+
+    #[test]
+    fn legacy_estimates_preserve_other_source_waits_and_replace_replayed_timing() {
+        let codex = tempfile::tempdir().unwrap();
+        let sessions = codex.path().join("sessions/2026/07/10");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let input = [
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"legacy-wait","cwd":"C:/workspace/demo","model_provider":"openai","model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":100}}}}),
+            json!({"timestamp":"2026-07-10T01:00:10Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"question"}}),
+            json!({"timestamp":"2026-07-10T01:01:30Z","type":"response_item","payload":{"type":"function_call_output","call_id":"question","output":"PRIVATE_ANSWER"}}),
+            json!({"timestamp":"2026-07-10T01:01:40Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"output_tokens":200}}}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        let original_path = sessions.join("rollout-legacy-wait.jsonl");
+        std::fs::write(&original_path, &input).unwrap();
+        let store = UsageStore::open_in_memory().unwrap();
+        let source = FsCodexSource::new(codex.path());
+        store
+            .apply_source_change(
+                &source,
+                &source.plan(&[]).unwrap().changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        store
+            .rebuild_session_derived("legacy-wait", chrono_tz::UTC, 30 * 60 * 1000)
+            .unwrap();
+        store.with_reader(|connection| {
+            let summary: (i64, String, i64) = connection.query_row("SELECT active_ms, active_method, active_is_estimate FROM sessions WHERE id = 'legacy-wait'", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            assert_eq!(summary, (20_000, "idle_estimate".into(), 1));
+            Ok(())
+        }).unwrap();
+        let continuation = [
+            json!({"timestamp":"2026-07-10T01:01:50Z","type":"session_meta","payload":{"id":"legacy-wait","cwd":"C:/workspace/demo","model_provider":"openai","model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-07-10T01:01:50Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"output_tokens":20}}}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(sessions.join("rollout-continuation.jsonl"), continuation).unwrap();
+        let plan = source.plan(&store.source_checkpoints().unwrap()).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        store
+            .apply_source_change(
+                &source,
+                &plan.changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        store
+            .with_reader(|connection| {
+                let active: i64 = connection.query_row(
+                    "SELECT active_ms FROM sessions WHERE id = 'legacy-wait'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(active, 30_000);
+                Ok(())
+            })
+            .unwrap();
+        // Replacing the first log must discard its old waits without losing the continuation.
+        let corrected = input
+            .lines()
+            .filter(|line| !line.contains("\"type\":\"response_item\""))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&original_path, corrected).unwrap();
+        let replay = source.plan(&store.source_checkpoints().unwrap()).unwrap();
+        assert_eq!(replay.changes.len(), 1);
+        assert_eq!(replay.changes[0].action, ChangeAction::Replay);
+        store
+            .apply_source_change(
+                &source,
+                &replay.changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        store
+            .with_reader(|connection| {
+                let summary: (i64, i64) = connection.query_row(
+                    "SELECT active_ms, output_tokens FROM sessions WHERE id = 'legacy-wait'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(summary, (110_000, 220));
+                Ok(())
+            })
+            .unwrap();
     }
 
     fn synthetic_session(sensitive: &str) -> String {

@@ -317,7 +317,7 @@ export function App() {
         </Suspense></ErrorBoundary>
 
         <footer className="app-footer">
-          <span>Chronolume {bootstrap.data?.appVersion ?? '2.1.9'}</span>
+          <span>Chronolume {bootstrap.data?.appVersion ?? '2.1.10'}</span>
           <span>Schema v{bootstrap.data?.schemaVersion ?? '…'}</span>
           <span>{bootstrap.data ? formatBytes(bootstrap.data.databaseSizeBytes) : '—'} {t('本地索引')}</span>
           {dashboard.isFetching && <span className="footer-refreshing">{t('正在刷新查询')}</span>}

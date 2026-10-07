@@ -56,6 +56,6 @@ export function SettingsPage() {
       {!validIdle && <p className="form-error" id="idle-gap-error" role="alert">{t('请输入 1–240 之间的整数。')}</p>}
       <ActionFeedback pending={savePreferences.isPending} error={savePreferences.error} success={savePreferences.isSuccess && '偏好已保存，将用于后续同步的活跃时间估算。'} />
     </section>
-    <section className="feature-card about-card"><h2>Chronolume 2.1.9</h2><p>{t('Chronolume 照亮本机 Codex 活动中的 Token、成本与时间脉络。应用不会读取 auth.json、在线配额或对话正文；价格更新是唯一可选网络能力，且只在用户明确触发后执行。')}</p></section>
+    <section className="feature-card about-card"><h2>Chronolume 2.1.10</h2><p>{t('Chronolume 照亮本机 Codex 活动中的 Token、成本与时间脉络。应用不会读取 auth.json、在线配额或对话正文；价格更新是唯一可选网络能力，且只在用户明确触发后执行。')}</p></section>
   </section>;
 }
