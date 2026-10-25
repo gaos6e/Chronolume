@@ -32,6 +32,20 @@ src-tauri\target\release\bundle\portable\Chronolume-<版本>-windows-x64-portabl
 
 便携 ZIP 包含同一个 Release EXE、README、项目 `LICENSE` 和由实际锁文件生成的 `THIRD_PARTY_LICENSES.txt`，不附带分析数据库或用户数据。三个性能 benchmark 由显式 Cargo feature 管理，仅供开发验证，安装器和便携包都不得包含它们；smoke 会审计安装目录只能出现 `chronolume.exe` 与 `uninstall.exe`。`build-portable.ps1` 会在压缩前重新执行许可证审计；旧的手写 `THIRD_PARTY_NOTICES.md` 不再是输入。安装器当前未签名，Windows SmartScreen 可能在建立签名信誉前显示警告。运行时目录由 Windows 平台路径解析，不依赖源码仓库位置。
 
+## 2.1.11 验证记录（2026-10-25）
+
+应用源码提交 `1076ad244605200058cc2f72f09d034d384d8ea1`（`v2.1.11`）。前端 41 项、Rust 99 项测试及版本一致性、类型检查、Lint、Clippy、生产构建通过；[发布提交的 Windows 与 macOS CI](https://github.com/gaos6e/Chronolume/actions/runs/40173826468) 均通过。
+
+| 产物 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `chronolume.exe` | 10,483,712 | `64F9E4CDD208980C64B1AD60288DD679EEBCA82B0CB73E6EAAE7A8D15A1074B2` |
+| `Chronolume_2.1.11_x64-setup.exe` | 3,247,345 | `16EAE22AF4C2FA7450367A3608ED4DFD37BE5DA9B38F860DCF685F89BCB3BD66` |
+| `Chronolume-2.1.11-windows-x64-portable.zip` | 4,387,975 | `FE13C056E88558D53CF633BC89685BFE498A7AE9239E108F1A8AB0B85F7A3F86` |
+
+许可证按当前锁文件重新生成后再打包。NSIS 静默安装退出码为 0，覆盖原安装目录 `D:\software\Chronolume`，并重建桌面 `Chronolume.lnk`。安装版和便携版分别在 358.25 ms、338.36 ms 创建窗口；这些时间仅表示窗口出现。安装目录 EXE 与独立 EXE 除正常的 `UNK` → `NSS` 三字节分发标记外完全一致，安装目录可执行文件审计通过。
+
+升级前对旧程序、快捷方式和真实分析库作本地备份。升级至 Schema 4 后，原有会话、模型价格与应用设置保留，SQLite `quick_check` 为 `ok`；原生 WebView2 的会话及模型页面均确认显示首字延迟与 TPS。备份和实际数据截图仅留在本机，未包含在发布附件中。6 项 Windows 附件的大小及 GitHub SHA-256 与本机构建逐一核对一致。
+
 ## 2.1.10 验证记录（2026-10-07）
 
 应用源码提交 `542b9ab4c945498e89324c3278af757ef656aeb2`（`v2.1.10`）。版本一致性、前端类型检查/Lint/40 项测试/生产构建及 Rust 格式/检查/Clippy/89 项测试通过；发布提交的 Windows 与 macOS CI 均通过。
