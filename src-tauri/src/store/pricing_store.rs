@@ -893,10 +893,13 @@ mod tests {
         let codex = tempfile::tempdir().unwrap();
         let sessions = codex.path().join("sessions/2026/07/10");
         std::fs::create_dir_all(&sessions).unwrap();
+        // Repricing prunes details older than 90 days; keep this fixture inside
+        // that window so its event-cost assertions remain valid as time passes.
+        let timestamp = Utc::now().to_rfc3339();
         let content = [
-            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"reprice-session","cwd":"C:/workspace/demo","model_provider":"openai"}}),
-            json!({"timestamp":"2026-07-10T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
-            json!({"timestamp":"2026-07-10T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":0,"output_tokens":100000,"reasoning_output_tokens":0}}}}),
+            json!({"timestamp":timestamp,"type":"session_meta","payload":{"id":"reprice-session","cwd":"C:/workspace/demo","model_provider":"openai"}}),
+            json!({"timestamp":timestamp,"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
+            json!({"timestamp":timestamp,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":0,"output_tokens":100000,"reasoning_output_tokens":0}}}}),
         ]
         .into_iter()
         .map(|value| serde_json::to_string(&value).unwrap())

@@ -18,7 +18,7 @@ import { ActionFeedback } from '../../components/ActionFeedback';
 import { Dialog } from '../../components/Dialog';
 import { useListState } from '../../lib/useListState';
 import { invalidateUsageData } from '../../lib/queries';
-import { formatCost, formatTokens, formatTps } from '../../lib/format';
+import { formatCost, formatLatency, formatTokens, formatTps } from '../../lib/format';
 import type { ModelPriceInput, UsageFilters } from '../../types';
 
 const EMPTY_PRICE: ModelPriceInput = {
@@ -28,7 +28,9 @@ const EMPTY_PRICE: ModelPriceInput = {
 
 export function ModelsPage({ filters }: { filters: UsageFilters }) {
   const { t } = useTranslation();
-  const tpsDescription = `${t('模型平均 TPS = 总输出 Token ÷ 总活跃秒数，按时长加权。')} ${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')} ${t('已扣除可识别的用户答复等待。')}`;
+  const tpsDescription = `${t('模型平均 TPS = 有计时记录的总输出 Token ÷ 总活跃秒数，按时长加权。')} ${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')} ${t('已扣除可识别的用户答复等待。')} ${t('进行中轮次按最新日志估算活跃时长，结束后更新为正式计时。')}`;
+  const latencyDescription = t('平均首字延迟 = 日志原生记录的每轮首次响应延迟总和 ÷ 有效轮次数。缺失计时的轮次不计入。');
+  const latencyTitle = (count: number) => `${latencyDescription} ${t('有效轮次：{{count}}', { count })} ${t('模型显示当前筛选范围内的统计。')}`;
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<'usage' | 'prices'>('usage');
   const list = useListState(filters, 'name');
@@ -71,18 +73,19 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
         <PageControls
           {...list} onPage={list.setPage} loading={models.isFetching} pageSize={30}
           total={models.data?.total ?? 0}
-          sortOptions={[{ value: 'tokens', label: 'Token' }, { value: 'tps', label: t('平均 TPS') }, { value: 'cost', label: t('成本') }, { value: 'sessions', label: t('会话') }, { value: 'recent', label: t('最近使用') }, { value: 'name', label: t('名称') }]}
+          sortOptions={[{ value: 'tokens', label: 'Token' }, { value: 'tps', label: t('平均 TPS') }, { value: 'ttft', label: t('平均首字延迟') }, { value: 'cost', label: t('成本') }, { value: 'sessions', label: t('会话') }, { value: 'recent', label: t('最近使用') }, { value: 'name', label: t('名称') }]}
         />
         <QueryStatus loading={models.isLoading && !models.data} refreshing={models.isFetching && Boolean(models.data)} error={models.error} onRetry={() => void models.refetch()} />
         {models.data && (
-        <div className="data-table-wrap" role="region" aria-label={t('模型用量')} tabIndex={0} aria-busy={models.isFetching}><table className="data-table">
-          <thead><tr><th>{t('模型')}</th><th>{t('会话')}</th><th>{t('输入')}</th><th>{t('缓存')}</th><th>{t('输出')}</th><th>{t('推理')}</th><th title={tpsDescription}>{t('平均 TPS')}</th><th>{t('命中率')}</th><th>{t('成本')}</th><th>{t('平均每百万 Token 成本')}</th><th>{t('最近使用')}</th></tr></thead>
+        <div className="data-table-wrap" role="region" aria-label={t('模型用量')} tabIndex={0} aria-busy={models.isFetching}><table className="data-table models-usage-table">
+          <thead><tr><th>{t('模型')}</th><th>{t('会话')}</th><th>{t('输入')}</th><th>{t('缓存')}</th><th>{t('输出')}</th><th>{t('推理')}</th><th title={tpsDescription}>{t('平均 TPS')}</th><th title={latencyDescription}>{t('平均首字延迟')}</th><th>{t('命中率')}</th><th>{t('成本')}</th><th>{t('平均每百万 Token 成本')}</th><th>{t('最近使用')}</th></tr></thead>
           <tbody>{models.data?.items.map((model) => <tr key={model.model}>
             <td><strong>{model.model}</strong><small>{model.pricingModelId ? `${t('计价')} ${model.pricingModelId}` : t('未匹配价格')}</small></td>
             <td>{model.sessionCount.toLocaleString()}</td><td>{formatTokens(model.freshInputTokens)}</td>
             <td>{formatTokens(model.cachedInputTokens)}</td><td>{formatTokens(model.outputTokens)}</td>
             <td>{formatTokens(model.reasoningTokens)}</td>
             <td className="tps-value" title={tpsDescription}>{formatTps(model.averageTokensPerSecond)}</td>
+            <td className="tps-value" title={latencyTitle(model.firstTokenLatencySampleCount)}>{formatLatency(model.averageFirstTokenLatencyMs)}</td>
             <td>{model.cacheHitRate == null ? 'N/A' : `${(model.cacheHitRate * 100).toFixed(1)}%`}</td>
             <td>{formatCost(model.estimatedCostMicrousd)}{model.unpricedEventCount > 0 && <small className="warning-copy">{t('部分未定价')}</small>}</td>
             <td>{formatCost(model.averageCostMicrousdPerMillionTokens)}</td>

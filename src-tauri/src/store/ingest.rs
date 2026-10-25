@@ -12,9 +12,9 @@ use crate::pricing::{
 };
 use crate::source::user_wait::{TimeInterval, UserWaitTiming, merge_intervals, subtract_intervals};
 use crate::source::{
-    ChangeAction, CodexSource, ModelChanged, PARSER_VERSION, ParsedRecord, SessionMetadata,
-    SourceChange, SourceCheckpoint, SourceCursor, SourceKind, StateSessionMetadata, StreamOutcome,
-    ToolEvent, UsageEvent,
+    ChangeAction, CodexSource, FirstTokenLatency, ModelChanged, PARSER_VERSION, ParsedRecord,
+    SessionMetadata, SourceChange, SourceCheckpoint, SourceCursor, SourceKind,
+    StateSessionMetadata, StreamOutcome, ToolEvent, UsageEvent,
 };
 
 #[derive(Debug, Clone)]
@@ -47,7 +47,7 @@ impl UsageStore {
                         cumulative_input_tokens, cumulative_cached_input_tokens,
                         cumulative_output_tokens, cumulative_reasoning_tokens,
                         relevant_event_ordinal, open_task_turn_id, open_task_started_at_ms,
-                        logs_rowid_watermark, contains_embedded_history, user_wait_timing_json
+                        logs_rowid_watermark, contains_embedded_history, user_wait_timing_json, first_token_context_json
                  FROM source_files
                  WHERE source_kind IN ('session', 'archived_session', 'state_db', 'logs_db')",
             )?;
@@ -85,6 +85,10 @@ impl UsageStore {
                                     Box::new(error),
                                 )
                             })?,
+                        first_token_context: serde_json::from_str(&row.get::<_, String>(23)?)
+                            .map_err(|error| rusqlite::Error::FromSqlConversionFailure(
+                                23, rusqlite::types::Type::Text, Box::new(error),
+                            ))?,
                     },
                 })
             })?;
@@ -193,13 +197,22 @@ impl UsageStore {
             } else {
                 None
             };
+            // Publish the cursor inside this transaction before rebuilding timing:
+            // every source, including this append, must use its latest open turn.
+            mark_source_ready(
+                transaction,
+                source_file_id,
+                change,
+                &outcome.cursor,
+                session_id.as_deref(),
+            )
+            .map_err(|error| ingest_stage("mark_ready", error))?;
             if let Some(session_id) = session_id.as_deref() {
                 rebuild_session_model_segments(transaction, session_id)
                     .map_err(|error| ingest_stage("model_segments", error))?;
-                let mut user_waits =
-                    stored_user_waits(transaction, session_id, Some(source_file_id))?;
-                user_waits.extend(outcome.cursor.user_wait_timing.excluded_intervals());
-                let user_waits = merge_intervals(user_waits);
+                let user_waits = stored_user_waits(transaction, session_id, None)?;
+                rebuild_open_task_activity(transaction, session_id, timezone, &user_waits)
+                    .map_err(|error| ingest_stage("open_task_activity", error))?;
                 rebuild_fallback_activity(
                     transaction,
                     session_id,
@@ -214,15 +227,6 @@ impl UsageStore {
                 rebuild_session_daily(transaction, session_id, change.action, timezone)
                     .map_err(|error| ingest_stage("session_daily", error))?;
             }
-            mark_source_ready(
-                transaction,
-                source_file_id,
-                change,
-                &outcome.cursor,
-                session_id.as_deref(),
-            )
-            .map_err(|error| ingest_stage("mark_ready", error))?;
-
             let displaced_session_id = (change.action == ChangeAction::Replay)
                 .then_some(previous_session)
                 .flatten()
@@ -323,6 +327,7 @@ impl UsageStore {
             }
             rebuild_session_model_segments(transaction, session_id)?;
             let user_waits = stored_user_waits(transaction, session_id, None)?;
+            rebuild_open_task_activity(transaction, session_id, timezone, &user_waits)?;
             rebuild_fallback_activity(
                 transaction,
                 session_id,
@@ -452,7 +457,7 @@ fn mark_source_ready(
             open_task_started_at_ms = ?19, logs_rowid_watermark = ?20, parser_version = ?21,
             contains_embedded_history = ?22,
             status = 'ready', last_error_code = NULL, last_seen_at_ms = ?23,
-            user_wait_timing_json = ?24
+            user_wait_timing_json = ?24, first_token_context_json = ?25
          WHERE id = ?1",
         params![
             source_file_id,
@@ -479,6 +484,7 @@ fn mark_source_ready(
             i64::from(cursor.contains_embedded_history),
             now_ms(),
             serde_json::to_string(&cursor.user_wait_timing).map_err(|_| AppError::database())?,
+            serde_json::to_string(&cursor.first_token_context).map_err(|_| AppError::database())?,
         ],
     )?;
     Ok(())
@@ -489,6 +495,10 @@ fn clear_file_derivatives(
     source_file_id: i64,
     session_id: Option<&str>,
 ) -> AppResult<()> {
+    transaction.execute(
+        "DELETE FROM session_turn_latencies WHERE source_file_id = ?1",
+        [source_file_id],
+    )?;
     transaction.execute(
         "DELETE FROM usage_events WHERE source_file_id = ?1",
         [source_file_id],
@@ -600,6 +610,7 @@ fn write_record(
         ParsedRecord::ModelChanged(_) => "model_changed",
         ParsedRecord::Usage(_) => "usage",
         ParsedRecord::Activity(_) => "activity",
+        ParsedRecord::FirstTokenLatency(_) => "first_token_latency",
         ParsedRecord::Tool(_) => "tool",
     };
     let result = match record {
@@ -618,6 +629,10 @@ fn write_record(
             ensure_session(transaction, change, context, Some(event.occurred_at_ms))?;
             apply_usage_event(transaction, change, context, event, pricing, timezone)
         }
+        ParsedRecord::FirstTokenLatency(event) => {
+            ensure_session(transaction, change, context, Some(event.occurred_at_ms))?;
+            apply_first_token_latency(transaction, context, event, timezone)
+        }
         ParsedRecord::Activity(segment) => {
             ensure_session(transaction, change, context, Some(segment.started_at_ms))?;
             apply_activity_segment(transaction, context, segment, timezone)
@@ -633,6 +648,38 @@ fn write_record(
             "结构化记录写入失败",
         )
     })
+}
+
+fn apply_first_token_latency(
+    transaction: &Transaction<'_>,
+    context: &ImportContext,
+    event: FirstTokenLatency,
+    timezone: Tz,
+) -> AppResult<()> {
+    if is_statistics_excluded_model(&event.model_raw) {
+        return Ok(());
+    }
+    let day = day_context(event.occurred_at_ms, timezone)?;
+    transaction.execute(
+        "INSERT INTO session_turn_latencies (
+            source_file_id, session_id, byte_offset, turn_id, occurred_at_ms,
+            local_date, timezone_id, model_provider, model_raw, latency_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT DO NOTHING",
+        params![
+            context.source_file_id,
+            context.session_id,
+            to_i64(event.byte_offset),
+            event.turn_id,
+            event.occurred_at_ms,
+            day.local_date,
+            day.timezone_id,
+            event.model_provider,
+            event.model_raw,
+            event.latency_ms,
+        ],
+    )?;
+    Ok(())
 }
 
 fn apply_state_session_metadata(
@@ -1210,6 +1257,73 @@ fn stored_user_waits(
     Ok(merge_intervals(intervals))
 }
 
+fn rebuild_open_task_activity(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    timezone: Tz,
+    user_waits: &[TimeInterval],
+) -> AppResult<()> {
+    transaction.execute(
+        "DELETE FROM activity_segments WHERE session_id = ?1 AND method = 'span_estimate'",
+        [session_id],
+    )?;
+    let mut statement = transaction.prepare(
+        "SELECT open_task_started_at_ms, user_wait_timing_json,
+                COALESCE(model_provider, 'unknown'), COALESCE(current_model_raw, 'unknown'),
+                COALESCE(current_pricing_model_id, '')
+         FROM source_files WHERE session_id = ?1 AND open_task_started_at_ms IS NOT NULL
+         ORDER BY open_task_started_at_ms, id",
+    )?;
+    let rows = statement.query_map([session_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+    // These replaceable snapshots must not collide with parser event ordinals or
+    // timestamp-based idle estimates while the next append closes the turn.
+    let mut segment_index = i64::MAX / 2;
+    for row in rows {
+        let (start, encoded_timing, provider, model, pricing_model) = row?;
+        if is_statistics_excluded_model(&model) {
+            continue;
+        }
+        let timing: UserWaitTiming =
+            serde_json::from_str(&encoded_timing).map_err(|_| AppError::database())?;
+        let Some(end) = timing.observed_until_ms().filter(|end| *end > start) else {
+            continue;
+        };
+        // Use observed log time, never wall-clock time after the last write.
+        for piece in subtract_intervals(&[TimeInterval { start, end }], user_waits) {
+            let day = day_context(piece.start, timezone)?;
+            transaction.execute(
+                "INSERT INTO activity_segments (
+                    session_id, segment_index, started_at_ms, ended_at_ms, active_ms,
+                    method, is_estimate, local_date, timezone_id, model_provider,
+                    model_raw, pricing_model_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'span_estimate', 1, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    session_id,
+                    segment_index,
+                    piece.start,
+                    piece.end,
+                    to_i64(piece.duration_ms()),
+                    day.local_date,
+                    day.timezone_id,
+                    provider,
+                    model,
+                    pricing_model,
+                ],
+            )?;
+            segment_index += 1;
+        }
+    }
+    Ok(())
+}
+
 fn rebuild_fallback_activity(
     transaction: &Transaction<'_>,
     session_id: &str,
@@ -1225,20 +1339,20 @@ fn rebuild_fallback_activity(
     )?;
     if action == ChangeAction::Replay {
         transaction.execute(
-            "DELETE FROM activity_segments WHERE session_id = ?1 AND method <> 'lifecycle'",
+            "DELETE FROM activity_segments WHERE session_id = ?1 AND method = 'idle_estimate'",
             [session_id],
         )?;
     } else if let Some(earliest) = earliest_detail {
         transaction.execute(
             "DELETE FROM activity_segments
-             WHERE session_id = ?1 AND method <> 'lifecycle' AND started_at_ms >= ?2",
+             WHERE session_id = ?1 AND method = 'idle_estimate' AND started_at_ms >= ?2",
             params![session_id, earliest],
         )?;
     }
 
     let lifecycle_count: i64 = transaction.query_row(
         "SELECT COUNT(*) FROM activity_segments
-         WHERE session_id = ?1 AND method = 'lifecycle'",
+         WHERE session_id = ?1 AND method IN ('lifecycle', 'span_estimate')",
         [session_id],
         |row| row.get(0),
     )?;
@@ -1339,7 +1453,8 @@ fn recompute_session_summary(
     let activity = transaction.query_row(
         "SELECT COALESCE(SUM(active_ms), 0),
                 COALESCE(SUM(CASE WHEN method = 'lifecycle' THEN 1 ELSE 0 END), 0),
-                COUNT(*)
+                COUNT(*), COALESCE(MAX(is_estimate), 1),
+                COALESCE(SUM(CASE WHEN method = 'span_estimate' THEN 1 ELSE 0 END), 0)
          FROM activity_segments
          WHERE session_id = ?1 AND LOWER(TRIM(model_raw)) <> 'codex-auto-review'",
         [session_id],
@@ -1348,6 +1463,8 @@ fn recompute_session_summary(
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         },
     )?;
@@ -1395,7 +1512,9 @@ fn recompute_session_summary(
         )
         .optional()?;
     let (active_method, active_estimate) = if activity.1 > 0 {
-        ("lifecycle", 0_i64)
+        ("lifecycle", activity.3)
+    } else if activity.4 > 0 {
+        ("span_estimate", 1_i64)
     } else if activity.2 > 0 {
         ("idle_estimate", 1_i64)
     } else {
@@ -1796,6 +1915,388 @@ mod tests {
 
     fn json_line(value: Value) -> String {
         serde_json::to_string(&value).unwrap()
+    }
+
+    #[test]
+    fn first_token_latency_survives_restart_replay_archival_and_retention() {
+        let codex = tempfile::tempdir().unwrap();
+        let sessions = codex.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let source_path = sessions.join("rollout-latency.jsonl");
+        let prefix = [
+            json!({"timestamp":"2026-07-11T03:59:55Z","type":"session_meta","payload":{"id":"latency","cwd":"C:/workspace/demo","model_provider":"openai"}}),
+            json!({"timestamp":"2026-07-11T03:59:55Z","type":"event_msg","payload":{"type":"task_started","turn_id":"first"}}),
+            json!({"timestamp":"2026-07-11T03:59:55Z","type":"turn_context","payload":{"turn_id":"first","model":"gpt-5.6-sol"}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(&source_path, prefix).unwrap();
+        let database = tempfile::tempdir().unwrap();
+        let database_path = database.path().join("usage.sqlite3");
+        let source = FsCodexSource::new(codex.path());
+        let timezone = chrono_tz::America::New_York;
+        let sync = |store: &UsageStore| {
+            for change in source
+                .plan(&store.source_checkpoints().unwrap())
+                .unwrap()
+                .changes
+            {
+                store
+                    .apply_source_change(
+                        &source,
+                        &change,
+                        &PricingCatalog::default(),
+                        timezone,
+                        30 * 60 * 1000,
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap();
+            }
+        };
+        let store = UsageStore::open(&database_path).unwrap();
+        sync(&store);
+        let query = crate::query::UsageQuery::new(Arc::new(store.clone()), timezone);
+        assert_eq!(
+            query
+                .session_detail("latency")
+                .unwrap()
+                .session
+                .first_token_latency_sample_count,
+            0
+        );
+        drop(query);
+        drop(store);
+        let store = UsageStore::open(&database_path).unwrap();
+        assert_eq!(
+            store.source_checkpoints().unwrap()[0]
+                .cursor
+                .first_token_context
+                .model_raw
+                .as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        let secret = "TTFT_PRIVATE_REPLY_9f1b";
+        let suffix = [
+            json!({"timestamp":"2026-07-11T04:00:01.125Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"first","time_to_first_token_ms":1000,"last_agent_message":secret}}),
+            json!({"timestamp":"2026-07-11T04:00:01.125Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"first","time_to_first_token_ms":9999}}),
+            json!({"timestamp":"2026-07-11T04:00:02Z","type":"event_msg","payload":{"type":"task_started","turn_id":"second"}}),
+            json!({"timestamp":"2026-07-11T04:00:02Z","type":"turn_context","payload":{"turn_id":"second","model":"gpt-5.6-terra"}}),
+            json!({"timestamp":"2026-07-11T04:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20}}}}),
+            json!({"timestamp":"2026-07-11T04:00:04Z","type":"event_msg","payload":{"type":"task_completed","turn_id":"second","time_to_first_token_ms":3000}}),
+            json!({"timestamp":"2026-07-11T04:00:05Z","type":"event_msg","payload":{"type":"task_complete","time_to_first_token_ms":0}}),
+            json!({"timestamp":"2026-07-11T04:00:06Z","type":"event_msg","payload":{"type":"task_complete","time_to_first_token_ms":120}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        OpenOptions::new()
+            .append(true)
+            .open(&source_path)
+            .unwrap()
+            .write_all(suffix.as_bytes())
+            .unwrap();
+        sync(&store);
+        sync(&store);
+        let check = || {
+            let query = crate::query::UsageQuery::new(Arc::new(store.clone()), timezone);
+            let session = query.session_detail("latency").unwrap().session;
+            assert_eq!(session.first_token_latency_sample_count, 4);
+            assert_eq!(session.average_first_token_latency_ms, Some(1030.0));
+            store.with_reader(|connection| {
+                let (count, min_date, max_date): (i64, String, String) = connection.query_row(
+                    "SELECT COUNT(*), MIN(local_date), MAX(local_date) FROM session_turn_latencies", [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+                assert_eq!((count, min_date.as_str(), max_date.as_str()), (4, "2026-07-11", "2026-07-11"));
+                Ok(())
+            }).unwrap();
+        };
+        check();
+        store
+            .rebuild_session_derived("latency", timezone, 30 * 60 * 1000)
+            .unwrap();
+        let mut checkpoints = store.source_checkpoints().unwrap();
+        checkpoints[0].parser_version = PARSER_VERSION - 1;
+        let replay = source.plan(&checkpoints).unwrap().changes.remove(0);
+        assert_eq!(replay.action, ChangeAction::Replay);
+        store
+            .apply_source_change(
+                &source,
+                &replay,
+                &PricingCatalog::default(),
+                timezone,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        check();
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(
+            store
+                .rebuild_rollups_and_prune(now, 90, timezone)
+                .unwrap()
+                .usage_events_deleted,
+            1
+        );
+        check();
+        let archived = codex.path().join("archived_sessions");
+        std::fs::create_dir_all(&archived).unwrap();
+        let archived_path = archived.join("rollout-latency.jsonl");
+        std::fs::rename(&source_path, &archived_path).unwrap();
+        sync(&store);
+        check();
+        let query = crate::query::UsageQuery::new(Arc::new(store.clone()), timezone);
+        assert!(query.session_detail("latency").unwrap().session.archived);
+        let original = std::fs::read(&archived_path).unwrap();
+        for path in [
+            database_path.clone(),
+            database_path.with_file_name("usage.sqlite3-wal"),
+        ] {
+            if path.exists() {
+                assert!(!String::from_utf8_lossy(&std::fs::read(path).unwrap()).contains(secret));
+            }
+        }
+        store.clear_analysis().unwrap();
+        store
+            .with_reader(|connection| {
+                assert_eq!(
+                    connection.query_row(
+                        "SELECT COUNT(*) FROM session_turn_latencies",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )?,
+                    0
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(&archived_path).unwrap(), original);
+    }
+
+    #[test]
+    fn open_turn_tps_survives_restart_replay_and_user_wait_then_uses_final_timing() {
+        let codex = tempfile::tempdir().unwrap();
+        let sessions = codex.path().join("sessions/2026/07/10");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let source_path = sessions.join("rollout-open-turn.jsonl");
+        let prefix = [
+            json!({"timestamp":"2026-07-10T23:59:40Z","type":"session_meta","payload":{"id":"open-turn","cwd":"C:/workspace/demo","model_provider":"openai"}}),
+            json!({"timestamp":"2026-07-10T23:59:40Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-07-10T23:59:40Z","type":"event_msg","payload":{"type":"task_started","turn_id":"first"}}),
+            json!({"timestamp":"2026-07-10T23:59:50Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":100}}}}),
+            json!({"timestamp":"2026-07-10T23:59:50Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"first","duration_ms":10000}}),
+            json!({"timestamp":"2026-07-10T23:59:55Z","type":"event_msg","payload":{"type":"task_started","turn_id":"second"}}),
+            json!({"timestamp":"2026-07-11T00:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"output_tokens":200}}}}),
+            json!({"timestamp":"2026-07-11T00:00:05Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"question","arguments":"PRIVATE_QUESTION"}}),
+            json!({"timestamp":"2026-07-11T00:00:15Z","type":"event_msg","payload":{"type":"agent_message","message":"PRIVATE_PROGRESS"}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(&source_path, prefix).unwrap();
+        let database = tempfile::tempdir().unwrap();
+        let database_path = database.path().join("usage.sqlite3");
+        let source = FsCodexSource::new(codex.path());
+        let store = UsageStore::open(&database_path).unwrap();
+        store
+            .apply_source_change(
+                &source,
+                &source.plan(&[]).unwrap().changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let request: crate::query::ListQuery =
+            serde_json::from_value(json!({"filters":{"range":{"preset":"all"}}})).unwrap();
+        {
+            let query = crate::query::UsageQuery::new(Arc::new(store.clone()), chrono_tz::UTC);
+            let session = query.session_detail("open-turn").unwrap().session;
+            assert_eq!(session.output_tokens, 200);
+            assert_eq!(session.active_ms, 20000);
+            assert_eq!(session.tokens_per_second, Some(10.0));
+            assert!(session.active_is_estimate);
+            assert_eq!(
+                query.sessions(&request).unwrap().items[0].tokens_per_second,
+                Some(10.0)
+            );
+            assert_eq!(
+                query.models(&request).unwrap().items[0].average_tokens_per_second,
+                Some(10.0)
+            );
+            store.with_reader(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT local_date, active_ms FROM session_daily_usage WHERE session_id = 'open-turn' ORDER BY local_date",
+                )?;
+                let daily = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(daily, vec![("2026-07-10".into(), 15000), ("2026-07-11".into(), 5000)]);
+                Ok(())
+            }).unwrap();
+        }
+        drop(store);
+        let store = UsageStore::open(&database_path).unwrap();
+        // A derived rebuild must recover the open turn solely from its checkpoint.
+        store
+            .rebuild_session_derived("open-turn", chrono_tz::UTC, 30 * 60 * 1000)
+            .unwrap();
+        store
+            .with_writer(|transaction| {
+                transaction.execute(
+                    "UPDATE source_files SET parser_version = ?1",
+                    [PARSER_VERSION - 1],
+                )?;
+                transaction.execute(
+                    "UPDATE sessions SET active_ms = 10000 WHERE id = 'open-turn'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let upgrade = source.plan(&store.source_checkpoints().unwrap()).unwrap();
+        assert_eq!(upgrade.changes[0].action, ChangeAction::Replay);
+        store
+            .apply_source_change(
+                &source,
+                &upgrade.changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let query = crate::query::UsageQuery::new(Arc::new(store.clone()), chrono_tz::UTC);
+        assert_eq!(
+            query.session_detail("open-turn").unwrap().session.active_ms,
+            20000
+        );
+        let suffix = [
+            json!({"timestamp":"2026-07-11T00:00:25Z","type":"response_item","payload":{"type":"function_call_output","call_id":"question","output":"PRIVATE_ANSWER"}}),
+            json!({"timestamp":"2026-07-11T00:00:35Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"output_tokens":300}}}}),
+            json!({"timestamp":"2026-07-11T00:00:35Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"second","duration_ms":40000}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        OpenOptions::new()
+            .append(true)
+            .open(&source_path)
+            .unwrap()
+            .write_all(suffix.as_bytes())
+            .unwrap();
+        let append = source.plan(&store.source_checkpoints().unwrap()).unwrap();
+        assert_eq!(append.changes[0].action, ChangeAction::Append);
+        store
+            .apply_source_change(
+                &source,
+                &append.changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let session = query.session_detail("open-turn").unwrap().session;
+        assert_eq!(session.output_tokens, 300);
+        assert_eq!(session.active_ms, 30000);
+        assert_eq!(session.tokens_per_second, Some(10.0));
+        assert!(!session.active_is_estimate);
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(10.0)
+        );
+        store
+            .with_reader(|connection| {
+                let count: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM activity_segments WHERE method = 'span_estimate'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0);
+                let timing: String = connection.query_row(
+                    "SELECT user_wait_timing_json FROM source_files",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert!(!timing.contains("PRIVATE_"));
+                Ok(())
+            })
+            .unwrap();
+        store
+            .rebuild_rollups_and_prune(
+                Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0)
+                    .unwrap()
+                    .timestamp_millis(),
+                90,
+                chrono_tz::UTC,
+            )
+            .unwrap();
+        assert_eq!(
+            query
+                .session_detail("open-turn")
+                .unwrap()
+                .retained_event_count,
+            0
+        );
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_tokens_per_second,
+            Some(10.0)
+        );
+    }
+
+    #[test]
+    fn first_open_turn_timing_replaces_snapshots_without_idle_double_counting() {
+        let codex = tempfile::tempdir().unwrap();
+        let sessions = codex.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let source_path = sessions.join("rollout-first-open.jsonl");
+        let prefix = [
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"first-open","cwd":"C:/workspace/demo","model_provider":"openai"}}),
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn"}}),
+            json!({"timestamp":"2026-07-10T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"output_tokens":50}}}}),
+            json!({"timestamp":"2026-07-10T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":100}}}}),
+        ].into_iter().map(json_line).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(&source_path, prefix).unwrap();
+        let source = FsCodexSource::new(codex.path());
+        let store = UsageStore::open_in_memory().unwrap();
+        store
+            .apply_source_change(
+                &source,
+                &source.plan(&[]).unwrap().changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let query = crate::query::UsageQuery::new(Arc::new(store.clone()), chrono_tz::UTC);
+        let session = query.session_detail("first-open").unwrap().session;
+        assert_eq!(session.active_ms, 10000);
+        assert_eq!(session.active_method, "span_estimate");
+        assert_eq!(session.tokens_per_second, Some(10.0));
+        for _ in 0..2 {
+            store
+                .rebuild_session_derived("first-open", chrono_tz::UTC, 30 * 60 * 1000)
+                .unwrap();
+            assert_eq!(
+                query
+                    .session_detail("first-open")
+                    .unwrap()
+                    .session
+                    .active_ms,
+                10000
+            );
+        }
+        OpenOptions::new().append(true).open(&source_path).unwrap().write_all(
+            (json_line(json!({"timestamp":"2026-07-10T01:00:20Z","type":"event_msg","payload":{"type":"agent_message"}})) + "\n").as_bytes(),
+        ).unwrap();
+        let append = source.plan(&store.source_checkpoints().unwrap()).unwrap();
+        store
+            .apply_source_change(
+                &source,
+                &append.changes[0],
+                &PricingCatalog::default(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let session = query.session_detail("first-open").unwrap().session;
+        assert_eq!(session.active_ms, 20000);
+        assert_eq!(session.tokens_per_second, Some(5.0));
     }
 
     #[test]

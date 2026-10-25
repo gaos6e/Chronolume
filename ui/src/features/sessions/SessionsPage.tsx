@@ -7,12 +7,14 @@ import { PageControls } from '../../components/PageControls';
 import { QueryStatus } from '../../components/QueryStatus';
 import { Dialog } from '../../components/Dialog';
 import { useListState } from '../../lib/useListState';
-import { formatCost, formatDuration, formatTokens, formatTps } from '../../lib/format';
+import { formatCost, formatDuration, formatLatency, formatTokens, formatTps } from '../../lib/format';
 import type { UsageFilters } from '../../types';
 
 export function SessionsPage({ filters }: { filters: UsageFilters }) {
   const { t } = useTranslation();
-  const tpsDescription = `${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')} ${t('已扣除可识别的用户答复等待。')}`;
+  const tpsDescription = `${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')} ${t('已扣除可识别的用户答复等待。')} ${t('进行中轮次按最新日志估算活跃时长，结束后更新为正式计时。')}`;
+  const latencyDescription = t('平均首字延迟 = 日志原生记录的每轮首次响应延迟总和 ÷ 有效轮次数。缺失计时的轮次不计入。');
+  const latencyTitle = (count: number) => `${latencyDescription} ${t('有效轮次：{{count}}', { count })} ${t('会话显示整个会话的统计。')}`;
   const list = useListState(filters, 'recent');
   const [selectedId, setSelectedId] = useState<string>();
   const [eventPage, setEventPage] = useState(0);
@@ -44,6 +46,7 @@ export function SessionsPage({ filters }: { filters: UsageFilters }) {
           { value: 'tokens', label: 'Token' }, { value: 'cost', label: t('成本') },
           { value: 'active_time', label: t('活跃时间') },
           { value: 'tps', label: t('TPS') },
+          { value: 'ttft', label: t('平均首字延迟') },
         ]}
       />
       <QueryStatus
@@ -55,7 +58,7 @@ export function SessionsPage({ filters }: { filters: UsageFilters }) {
       {sessions.data && (
       <div className="data-table-wrap" role="region" aria-label={t('会话')} tabIndex={0} aria-busy={sessions.isFetching}>
         <table className="data-table sessions-table">
-          <thead><tr><th>{t('会话')}</th><th>{t('时间')}</th><th>{t('模型')}</th><th>Token</th><th>{t('成本')}</th><th>{t('活跃')}</th><th title={tpsDescription}>{t('TPS')}</th><th>{t('完整性')}</th><th><span className="sr-only">{t('操作')}</span></th></tr></thead>
+          <thead><tr><th>{t('会话')}</th><th>{t('时间')}</th><th>{t('模型')}</th><th>Token</th><th>{t('成本')}</th><th>{t('活跃')}</th><th title={tpsDescription}>{t('TPS')}</th><th title={latencyDescription}>{t('平均首字延迟')}</th><th>{t('完整性')}</th><th><span className="sr-only">{t('操作')}</span></th></tr></thead>
           <tbody>{sessions.data?.items.map((session) => (
             <tr key={session.id}>
               <td><strong>{session.title}</strong><small>{session.workspaceLabel}{session.archived && <><Archive />{t('归档')}</>}</small></td>
@@ -65,6 +68,7 @@ export function SessionsPage({ filters }: { filters: UsageFilters }) {
               <td>{formatCost(session.estimatedCostMicrousd)}{session.unpricedEventCount > 0 && <small className="warning-copy">{t('部分未定价')}</small>}</td>
               <td><strong>{formatDuration(session.activeMs)}</strong><small title={session.activeMethod}>{session.activeIsEstimate ? t('估算') : t('生命周期')}</small></td>
               <td className="tps-value" title={tpsDescription}><strong>{formatTps(session.tokensPerSecond)}</strong>{session.tokensPerSecond != null && session.activeIsEstimate && <small>{t('估算')}</small>}</td>
+              <td className="tps-value" title={latencyTitle(session.firstTokenLatencySampleCount)}>{formatLatency(session.averageFirstTokenLatencyMs)}</td>
               <td><span className={`integrity ${session.integrityStatus}`}>{t(session.integrityStatus)}</span></td>
               <td><button type="button" className="icon-button" aria-label={t('查看会话详情')} onClick={() => { setEventPage(0); setEventDataOpen(false); setSelectedId(session.id); }}><ChevronRight /></button></td>
             </tr>
@@ -84,6 +88,7 @@ export function SessionsPage({ filters }: { filters: UsageFilters }) {
             <div className="detail-metrics">
               <div><span>Token</span><strong>{formatTokens(detail.data.session.totalTokens)}</strong></div>
               <div title={tpsDescription}><span>{t('TPS')}{detail.data.session.tokensPerSecond != null && detail.data.session.activeIsEstimate ? ` · ${t('估算')}` : ''}</span><strong>{formatTps(detail.data.session.tokensPerSecond)}</strong></div>
+              <div title={latencyTitle(detail.data.session.firstTokenLatencySampleCount)}><span>{t('平均首字延迟')}</span><strong>{formatLatency(detail.data.session.averageFirstTokenLatencyMs)}</strong></div>
               <div><span>{t('使用模型')}</span><strong>{detail.data.modelSegments.length}</strong></div>
               <div><span>{t('工具类别')}</span><strong>{detail.data.tools.length}</strong></div>
               <div><span>{t('保留事件')}</span><strong>{detail.data.retainedEventCount}</strong></div>

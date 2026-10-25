@@ -63,6 +63,7 @@ impl UsageStore {
                 "daily_usage_rollups",
                 "session_daily_tool",
                 "session_daily_usage",
+                "session_turn_latencies",
                 "tool_events",
                 "usage_events",
                 "activity_segments",

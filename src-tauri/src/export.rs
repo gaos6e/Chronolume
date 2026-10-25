@@ -214,7 +214,7 @@ fn export_sessions(format: ExportFormat, rows: Vec<SessionRow>) -> AppResult<Exp
         return json_output_with_count(rows);
     }
     let mut csv = String::from(
-        "session,workspace,started_ms,ended_ms,active_ms,active_method,provider,model,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,archived,integrity,tokens_per_second\r\n",
+        "session,workspace,started_ms,ended_ms,active_ms,active_method,provider,model,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,archived,integrity,tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count\r\n",
     );
     for row in &rows {
         push_csv_row(
@@ -237,6 +237,8 @@ fn export_sessions(format: ExportFormat, rows: Vec<SessionRow>) -> AppResult<Exp
                 &row.archived.to_string(),
                 &row.integrity_status,
                 &optional_f64(row.tokens_per_second),
+                &optional_f64(row.average_first_token_latency_ms),
+                &row.first_token_latency_sample_count.to_string(),
             ],
         );
     }
@@ -251,7 +253,7 @@ fn export_models(format: ExportFormat, rows: Vec<ModelRow>) -> AppResult<ExportO
         return json_output_with_count(rows);
     }
     let mut csv = String::from(
-        "model,pricing_id,sessions,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,unpriced_events,last_used_ms,average_tokens_per_second\r\n",
+        "model,pricing_id,sessions,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,unpriced_events,last_used_ms,average_tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count\r\n",
     );
     for row in &rows {
         push_csv_row(
@@ -269,6 +271,8 @@ fn export_models(format: ExportFormat, rows: Vec<ModelRow>) -> AppResult<ExportO
                 &row.unpriced_event_count.to_string(),
                 &optional_i64(row.last_used_at_ms),
                 &optional_f64(row.average_tokens_per_second),
+                &optional_f64(row.average_first_token_latency_ms),
+                &row.first_token_latency_sample_count.to_string(),
             ],
         );
     }
@@ -399,6 +403,8 @@ mod tests {
             output_tokens: 20,
             reasoning_tokens: 5,
             tokens_per_second: Some(40.0),
+            average_first_token_latency_ms: Some(1250.5),
+            first_token_latency_sample_count: 2,
             estimated_cost_microusd: None,
             unpriced_event_count: 1,
             archived: false,
@@ -419,12 +425,18 @@ mod tests {
             unpriced_event_count: 1,
             average_cost_microusd_per_million_tokens: None,
             average_tokens_per_second: Some(40.0),
+            average_first_token_latency_ms: Some(1250.5),
+            first_token_latency_sample_count: 2,
             last_used_at_ms: None,
         };
         let mut missing_session = session.clone();
         missing_session.tokens_per_second = None;
+        missing_session.average_first_token_latency_ms = None;
+        missing_session.first_token_latency_sample_count = 0;
         let mut missing_model = model.clone();
         missing_model.average_tokens_per_second = None;
+        missing_model.average_first_token_latency_ms = None;
+        missing_model.first_token_latency_sample_count = 0;
 
         let csv = export_sessions(
             ExportFormat::Csv,
@@ -432,14 +444,20 @@ mod tests {
         )
         .unwrap();
         let lines: Vec<_> = csv.content.lines().collect();
-        assert!(lines[0].ends_with(",tokens_per_second"));
-        assert!(lines[1].ends_with(",40"));
-        assert!(lines[2].ends_with(','));
+        assert!(lines[0].ends_with(
+            ",tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count"
+        ));
+        assert!(lines[1].ends_with(",40,1250.5,2"));
+        assert!(lines[2].ends_with(",,,0"));
         assert_eq!(lines[0].split(',').count(), lines[2].split(',').count());
         let json = export_sessions(ExportFormat::Json, vec![session, missing_session]).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json.content).unwrap();
         assert_eq!(value["data"][0]["tokensPerSecond"], 40.0);
         assert!(value["data"][1]["tokensPerSecond"].is_null());
+        assert_eq!(value["data"][0]["averageFirstTokenLatencyMs"], 1250.5);
+        assert_eq!(value["data"][0]["firstTokenLatencySampleCount"], 2);
+        assert!(value["data"][1]["averageFirstTokenLatencyMs"].is_null());
+        assert_eq!(value["data"][1]["firstTokenLatencySampleCount"], 0);
 
         let csv = export_models(
             ExportFormat::Csv,
@@ -447,14 +465,18 @@ mod tests {
         )
         .unwrap();
         let lines: Vec<_> = csv.content.lines().collect();
-        assert!(lines[0].ends_with(",average_tokens_per_second"));
-        assert!(lines[1].ends_with(",40"));
-        assert!(lines[2].ends_with(','));
+        assert!(lines[0].ends_with(",average_tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count"));
+        assert!(lines[1].ends_with(",40,1250.5,2"));
+        assert!(lines[2].ends_with(",,,0"));
         assert_eq!(lines[0].split(',').count(), lines[2].split(',').count());
         let json = export_models(ExportFormat::Json, vec![model, missing_model]).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json.content).unwrap();
         assert_eq!(value["data"][0]["averageTokensPerSecond"], 40.0);
         assert!(value["data"][1]["averageTokensPerSecond"].is_null());
+        assert_eq!(value["data"][0]["averageFirstTokenLatencyMs"], 1250.5);
+        assert_eq!(value["data"][0]["firstTokenLatencySampleCount"], 2);
+        assert!(value["data"][1]["averageFirstTokenLatencyMs"].is_null());
+        assert_eq!(value["data"][1]["firstTokenLatencySampleCount"], 0);
     }
 
     #[test]

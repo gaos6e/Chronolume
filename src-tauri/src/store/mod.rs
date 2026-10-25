@@ -29,6 +29,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         3,
         include_str!("../../migrations/0003_user_wait_timing.sql"),
     ),
+    (
+        4,
+        include_str!("../../migrations/0004_first_token_latency.sql"),
+    ),
 ];
 
 /// v2 分析库的深 Module。连接配置、迁移、池化和事务策略留在实现内部。
@@ -190,7 +194,7 @@ mod tests {
     fn creates_required_schema_and_passes_integrity_check() {
         let store = UsageStore::open_in_memory().expect("open test database");
 
-        assert_eq!(store.schema_version().expect("schema version"), 3);
+        assert_eq!(store.schema_version().expect("schema version"), 4);
         assert!(store.integrity_check().expect("integrity check"));
 
         let required = [
@@ -238,6 +242,36 @@ mod tests {
     }
 
     #[test]
+    fn migrates_v3_first_token_latency_without_losing_checkpoints() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v3.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at_ms INTEGER NOT NULL) STRICT;").unwrap();
+        for (version, sql) in MIGRATIONS.iter().filter(|(version, _)| *version <= 3) {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations VALUES (?1, 'previous', 0)",
+                    [version],
+                )
+                .unwrap();
+        }
+        connection.execute_batch("INSERT INTO source_files (source_key, relative_path, source_kind, file_size, mtime_ns, prefix_hash, parser_version, safe_offset, complete_line_offset, open_task_turn_id, open_task_started_at_ms) VALUES ('jsonl:existing', 'sessions/existing.jsonl', 'session', 1000, 1, 'hash', 10, 123, 123, 'existing-turn', 1000);").unwrap();
+        drop(connection);
+        let store = UsageStore::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 4);
+        let checkpoint = store.source_checkpoints().unwrap().remove(0);
+        assert_eq!(checkpoint.cursor.safe_offset, 123);
+        assert_eq!(checkpoint.parser_version, 10);
+        assert_eq!(
+            checkpoint.cursor.open_task_turn_id.as_deref(),
+            Some("existing-turn")
+        );
+        assert!(checkpoint.cursor.first_token_context.model_raw.is_none());
+        assert!(store.integrity_check().unwrap());
+    }
+
+    #[test]
     fn migrates_v2_user_timing_without_losing_existing_source_checkpoint() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("v2.sqlite3");
@@ -253,7 +287,7 @@ mod tests {
         connection.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at_ms INTEGER NOT NULL) STRICT; INSERT INTO schema_migrations VALUES (2, 'migration_0002', 0); INSERT INTO source_files (source_key, relative_path, source_kind, file_size, mtime_ns, prefix_hash, parser_version, safe_offset, complete_line_offset, open_task_turn_id, open_task_started_at_ms, contains_embedded_history) VALUES ('jsonl:existing', 'sessions/existing.jsonl', 'session', 1000, 1, 'hash', 8, 123, 123, 'existing-turn', 1000, 1);").unwrap();
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 3);
+        assert_eq!(store.schema_version().unwrap(), 4);
         let checkpoint = store.source_checkpoints().unwrap().remove(0);
         assert_eq!(checkpoint.cursor.safe_offset, 123);
         assert_eq!(
@@ -294,7 +328,7 @@ mod tests {
         drop(connection);
 
         let store = UsageStore::open(&path).expect("migrate store");
-        assert_eq!(store.schema_version().expect("schema version"), 3);
+        assert_eq!(store.schema_version().expect("schema version"), 4);
         store
             .with_reader(|connection| {
                 let column_exists: i64 = connection.query_row(

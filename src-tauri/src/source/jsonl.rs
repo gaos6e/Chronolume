@@ -6,8 +6,9 @@ use chrono::DateTime;
 use serde_json::Value;
 
 use super::{
-    ActivitySegment, ChangeAction, ModelChanged, ParsedRecord, SessionMetadata, SourceChange,
-    SourceCursor, StreamOutcome, ToolEvent, UsageEvent,
+    ActivitySegment, ChangeAction, FirstTokenContext, FirstTokenLatency, ModelChanged,
+    ParsedRecord, SessionMetadata, SourceChange, SourceCursor, StreamOutcome, ToolEvent,
+    UsageEvent,
 };
 use crate::activity::{ToolInvocation, classify};
 use crate::error::{AppError, AppResult};
@@ -255,6 +256,20 @@ fn parse_turn_context(
     let Some(model) = model else {
         return Vec::new();
     };
+    let turn_id = payload
+        .get("turn_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty());
+    if turn_id.is_some() && cursor.first_token_context.turn_id.as_deref() != turn_id {
+        cursor.first_token_context = FirstTokenContext {
+            turn_id: turn_id.map(str::to_string),
+            ..FirstTokenContext::default()
+        };
+    }
+    if cursor.first_token_context.model_raw.is_none() {
+        cursor.first_token_context.model_raw = Some(model.to_string());
+        cursor.first_token_context.model_provider = cursor.model_provider.clone();
+    }
     if cursor.current_model_raw.as_deref() == Some(model) {
         return Vec::new();
     }
@@ -286,10 +301,18 @@ fn parse_event_message(
                 .map(str::to_string);
             cursor.open_task_started_at_ms =
                 task_timestamp(payload.get("started_at"), occurred_at_ms);
+            cursor.first_token_context = FirstTokenContext {
+                turn_id: cursor.open_task_turn_id.clone(),
+                ..FirstTokenContext::default()
+            };
             Vec::new()
         }
         Some("task_complete" | "task_completed" | "turn_aborted") => {
-            parse_task_end(payload, occurred_at_ms, byte_offset, cursor)
+            // Native TTFT remains usable even when lifecycle timing is incomplete.
+            let latency = parse_first_token_latency(payload, occurred_at_ms, byte_offset, cursor);
+            let mut records = parse_task_end(payload, occurred_at_ms, byte_offset, cursor);
+            records.extend(latency.map(ParsedRecord::FirstTokenLatency));
+            records
         }
         _ => Vec::new(),
     }
@@ -376,6 +399,49 @@ fn parse_token_count(
         reasoning_tokens: reasoning,
         total_tokens: usage.input.saturating_add(usage.output),
     })]
+}
+
+fn parse_first_token_latency(
+    payload: &serde_json::Map<String, Value>,
+    occurred_at_ms: Option<i64>,
+    byte_offset: u64,
+    cursor: &SourceCursor,
+) -> Option<FirstTokenLatency> {
+    let latency_ms = i64::try_from(payload.get("time_to_first_token_ms")?.as_u64()?).ok()?;
+    let occurred_at_ms =
+        occurred_at_ms.or_else(|| task_timestamp(payload.get("completed_at"), None))?;
+    let turn_id = payload
+        .get("turn_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty());
+    let context = &cursor.first_token_context;
+    let matching =
+        turn_id.is_none() || context.turn_id.is_none() || context.turn_id.as_deref() == turn_id;
+    // An out-of-order end event must not inherit a different turn's model.
+    let model_raw = matching
+        .then(|| {
+            context
+                .model_raw
+                .clone()
+                .or_else(|| cursor.current_model_raw.clone())
+        })
+        .flatten();
+    let model_provider = matching
+        .then(|| {
+            context
+                .model_provider
+                .clone()
+                .or_else(|| cursor.model_provider.clone())
+        })
+        .flatten();
+    Some(FirstTokenLatency {
+        byte_offset,
+        turn_id: turn_id.map(str::to_string),
+        occurred_at_ms,
+        model_provider: model_provider.unwrap_or_else(|| "unknown".to_string()),
+        model_raw: model_raw.unwrap_or_else(|| "unknown".to_string()),
+        latency_ms,
+    })
 }
 
 fn parse_task_end(
@@ -654,6 +720,141 @@ mod tests {
         )
         .unwrap();
         (records, outcome)
+    }
+
+    #[test]
+    fn native_first_token_latency_is_independent_of_lifecycle_and_rejects_invalid_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("latency.jsonl");
+        let mut values = vec![
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"latency"}}),
+            json!({"timestamp":"2026-07-10T01:00:01Z","type":"event_msg","payload":{"type":"task_complete"}}),
+        ];
+        for latency in [
+            json!(0),
+            json!(1234),
+            Value::Null,
+            json!(-1),
+            json!(1.5),
+            json!("12"),
+            json!(true),
+            json!(u64::MAX),
+        ] {
+            values.push(json!({"timestamp":"2026-07-10T01:00:02.125Z","type":"event_msg","payload":{"type":"task_complete","time_to_first_token_ms":latency}}));
+        }
+        values.push(json!({"timestamp":"2026-07-10T01:00:03Z","type":"event_msg","payload":{"type":"turn_aborted","time_to_first_token_ms":42}}));
+        std::fs::write(
+            &path,
+            values.iter().map(line).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let (records, _) = run(&path, ChangeAction::Replay, SourceCursor::default());
+        let samples: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                ParsedRecord::FirstTokenLatency(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            samples
+                .iter()
+                .map(|sample| sample.latency_ms)
+                .collect::<Vec<_>>(),
+            vec![0, 1234, 42]
+        );
+        assert_eq!(samples[0].occurred_at_ms, 1_783_645_202_125);
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record, ParsedRecord::Activity(_)))
+        );
+    }
+
+    #[test]
+    fn first_token_latency_keeps_first_turn_model_across_appends_and_model_switches() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("latency-context.jsonl");
+        let prefix = [
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"latency","model_provider":"openai"}}),
+            json!({"timestamp":"2026-07-10T01:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"first"}}),
+            json!({"timestamp":"2026-07-10T01:00:01Z","type":"turn_context","payload":{"turn_id":"first","model":"gpt-first"}}),
+        ];
+        std::fs::write(
+            &path,
+            prefix.iter().map(line).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let (records, first) = run(&path, ChangeAction::Replay, SourceCursor::default());
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record, ParsedRecord::FirstTokenLatency(_)))
+        );
+        let suffix = [
+            json!({"timestamp":"2026-07-10T01:00:02Z","type":"turn_context","payload":{"turn_id":"first","model":"gpt-second"}}),
+            json!({"timestamp":"2026-07-10T01:00:03Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"first","time_to_first_token_ms":312}}),
+            json!({"timestamp":"2026-07-10T01:00:04Z","type":"event_msg","payload":{"type":"task_started","turn_id":"second"}}),
+            json!({"timestamp":"2026-07-10T01:00:04Z","type":"turn_context","payload":{"turn_id":"second","model":"gpt-second"}}),
+            json!({"timestamp":"2026-07-10T01:00:05Z","type":"event_msg","payload":{"type":"task_completed","turn_id":"second","time_to_first_token_ms":21}}),
+            json!({"timestamp":"2026-07-10T01:00:06Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"unrelated","time_to_first_token_ms":1}}),
+        ];
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        use std::io::Write;
+        writeln!(
+            file,
+            "{}",
+            suffix.iter().map(line).collect::<Vec<_>>().join("\n")
+        )
+        .unwrap();
+        let (records, _) = run_for_session(&path, ChangeAction::Append, first.cursor, "latency");
+        let samples: Vec<_> = records
+            .into_iter()
+            .filter_map(|record| match record {
+                ParsedRecord::FirstTokenLatency(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(samples.len(), 3);
+        assert_eq!(
+            (&samples[0].model_raw, samples[0].latency_ms),
+            (&"gpt-first".to_string(), 312)
+        );
+        assert_eq!(
+            (&samples[1].model_raw, samples[1].latency_ms),
+            (&"gpt-second".to_string(), 21)
+        );
+        assert_eq!(samples[2].model_raw, "unknown");
+    }
+
+    #[test]
+    fn first_token_latency_skips_embedded_parent_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("latency-fork.jsonl");
+        let values = [
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"child","session_id":"parent"}}),
+            json!({"timestamp":"2026-07-10T01:00:00Z","type":"session_meta","payload":{"id":"parent"}}),
+            json!({"timestamp":"2026-07-10T01:00:01Z","type":"event_msg","payload":{"type":"task_complete","time_to_first_token_ms":900}}),
+            json!({"timestamp":"2026-07-10T01:00:02Z","type":"session_meta","payload":{"id":"child"}}),
+            json!({"timestamp":"2026-07-10T01:00:03Z","type":"event_msg","payload":{"type":"task_complete","time_to_first_token_ms":100}}),
+        ];
+        std::fs::write(
+            &path,
+            values.iter().map(line).collect::<Vec<_>>().join("\n") + "\n",
+        )
+        .unwrap();
+        let (records, _) = run(&path, ChangeAction::Replay, SourceCursor::default());
+        let samples: Vec<_> = records
+            .into_iter()
+            .filter_map(|record| match record {
+                ParsedRecord::FirstTokenLatency(event) => Some(event.latency_ms),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(samples, vec![100]);
     }
 
     #[test]

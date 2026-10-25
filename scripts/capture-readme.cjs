@@ -61,6 +61,7 @@ async (page) => {
         ...aggregate, model: model.model, pricingModelId: model.model,
         cacheHitRate: aggregate.cachedInputTokens / aggregate.inputTokens,
         averageTokensPerSecond: aggregate.outputTokens / (aggregate.activeMs / 1_000),
+        averageFirstTokenLatencyMs: [1840, 2650, 720][i], firstTokenLatencySampleCount: aggregate.sessionCount,
         averageCostMicrousdPerMillionTokens: Math.round(aggregate.estimatedCostMicrousd / aggregate.totalTokens * 1_000_000),
         lastUsedAtMs: now - i * 3_600_000,
       };
@@ -98,6 +99,7 @@ async (page) => {
         inputTokens, cachedInputTokens, freshInputTokens: inputTokens - cachedInputTokens,
         outputTokens, reasoningTokens: Math.round(outputTokens * .38), totalTokens: inputTokens + outputTokens,
         tokensPerSecond: outputTokens / (activeMs / 1_000),
+        averageFirstTokenLatencyMs: [1250, 2310, 720, 1840, 0][i], firstTokenLatencySampleCount: 3 + i,
         estimatedCostMicrousd: Math.round((inputTokens - cachedInputTokens) * model.inputPrice + cachedInputTokens * model.cachePrice + outputTokens * model.outputPrice),
         unpricedEventCount: 0, archived: i === 4, integrityStatus: 'complete',
       };

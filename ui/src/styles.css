@@ -571,6 +571,10 @@ button:disabled { cursor: wait; opacity: .5; }
 .data-table td > small, .data-table td strong + small { margin-top: 4px; display: flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 0.75rem; }
 .data-table td small svg { width: 10px; }
 .data-table .tps-value { white-space: nowrap; }
+.sessions-table { min-width: 70rem; }
+.models-usage-table { min-width: 78rem; }
+.sessions-table .model-pill, .sessions-table .integrity,
+.models-usage-table td:first-child { white-space: nowrap; }
 .primary-cell { display: flex; gap: 9px; align-items: center; min-width: 230px; }
 .primary-cell > svg { width: 18px; color: #7185db; }
 .primary-cell strong, .primary-cell small { display: block; }

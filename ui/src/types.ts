@@ -195,6 +195,8 @@ export interface SessionRow {
   outputTokens: number;
   reasoningTokens: number;
   tokensPerSecond: number | null;
+  averageFirstTokenLatencyMs: number | null;
+  firstTokenLatencySampleCount: number;
   estimatedCostMicrousd?: number;
   unpricedEventCount: number;
   archived: boolean;
@@ -216,6 +218,8 @@ export interface ModelRow {
   unpricedEventCount: number;
   averageCostMicrousdPerMillionTokens?: number;
   averageTokensPerSecond: number | null;
+  averageFirstTokenLatencyMs: number | null;
+  firstTokenLatencySampleCount: number;
   lastUsedAtMs?: number;
 }
 

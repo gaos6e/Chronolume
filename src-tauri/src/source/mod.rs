@@ -15,9 +15,8 @@ use walkdir::WalkDir;
 use crate::activity::{OperationKind, ToolCategory};
 use crate::error::{AppError, AppResult};
 
-// Replaying older JSONL checkpoints corrects activity and TPS summaries that
-// previously included pauses for user answers.
-pub const PARSER_VERSION: i64 = 9;
+// Replay accessible logs to backfill native per-turn first-token latency.
+pub const PARSER_VERSION: i64 = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,6 +75,15 @@ pub struct SourceCursor {
     /// records until the owning fork's session metadata appears again.
     pub contains_embedded_history: bool,
     pub user_wait_timing: user_wait::UserWaitTiming,
+    pub first_token_context: FirstTokenContext,
+}
+
+/// The first model context of a turn, retained across appends and restarts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FirstTokenContext {
+    pub turn_id: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_raw: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +161,7 @@ pub enum ParsedRecord {
     ModelChanged(ModelChanged),
     Usage(UsageEvent),
     Activity(ActivitySegment),
+    FirstTokenLatency(FirstTokenLatency),
     Tool(ToolEvent),
 }
 
@@ -207,6 +216,16 @@ pub struct UsageEvent {
     pub output_tokens: u64,
     pub reasoning_tokens: u64,
     pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstTokenLatency {
+    pub byte_offset: u64,
+    pub turn_id: Option<String>,
+    pub occurred_at_ms: i64,
+    pub model_provider: String,
+    pub model_raw: String,
+    pub latency_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

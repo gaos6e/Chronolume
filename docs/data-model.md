@@ -15,6 +15,7 @@ v2 分析数据库在 Windows 位于 `%LOCALAPPDATA%\Chronolume\v2\chronolume-v2
 | `tool_events` | 90 天 | 已脱敏工具名与类别明细 |
 | `session_model_segments` | 永久 | 会话级模型切换摘要，不含正文 |
 | `activity_segments` | 永久 | 会话级生命周期/估算摘要，不含事件参数 |
+| `session_turn_latencies` | 永久 | 每轮原生首字延迟、模型与时间，不含正文 |
 | `session_daily_usage` | 永久 | 会话/日期/模型中间汇总，支持精准筛选和改价 |
 | `session_daily_tool` | 永久 | 会话/日期/工具类别中间汇总 |
 | `daily_usage_rollups` | 永久 | 工作区/提供方/模型/日聚合 |
@@ -24,7 +25,13 @@ v2 分析数据库在 Windows 位于 `%LOCALAPPDATA%\Chronolume\v2\chronolume-v2
 
 `usage_events` 和 `tool_events` 是唯一用于事件分页的表，按本地日边界删除 90 天前记录；删除前先重建永久汇总。`session_model_segments` 与 `activity_segments` 属于会话摘要，只保存模型/时间/计数，不保存消息、工具参数、命令或文件路径。
 
-TPS 使用输出 Token（已包含推理 Token）除以活跃秒数。会话 `tokensPerSecond` 从完整会话摘要计算；模型 `averageTokensPerSecond` 从当前筛选范围内 `session_daily_usage` 的总输出 Token 和总活跃时长计算，按时长加权。这些字段在查询时计算，事件明细过期后仍可使用永久汇总。活跃时长包含工具调用等等待，沿用现有生命周期及估算口径；总活跃时长为零时返回 `null`，有时长但无输出时返回 `0`。
+TPS 使用输出 Token（已包含推理 Token）除以活跃秒数。会话 `tokensPerSecond` 从完整会话摘要计算；模型 `averageTokensPerSecond` 仅使用当前筛选范围内 `session_daily_usage` 中 `active_ms > 0` 的记录，将其总输出 Token 除以总活跃时长，按时长加权。没有计时的记录仍保留在 Token、成本和会话数统计中，但不增加 TPS 的分子；TPS 排序使用相同口径。这些字段在查询时计算，事件明细过期后仍可使用永久汇总。活跃时长包含工具调用等等待，沿用现有生命周期及估算口径；总活跃时长为零时返回 `null`，有时长但无输出时返回 `0`。
+
+平均首字延迟（TTFT）读取轮次结束事件中的原生 `time_to_first_token_ms`，以有效轮次的延迟总和除以轮次数计算，不按会话平均值再次取平均。`SessionRow` 和 `ModelRow` 都返回 `averageFirstTokenLatencyMs`（毫秒，缺失为 `null`）及 `firstTokenLatencySampleCount`（无样本为 `0`）。会话列表与详情使用整个会话的有效轮次；模型使用当前日期、工作区、提供方、模型及归档筛选范围内的轮次，同名模型沿用现有合并规则。日期取结束事件日志时间对应的本地日期；模型取该轮首次生效的模型上下文。仅接受 SQLite 整数范围内的非负整数，真实 `0` 计入，缺失或非法值不计入，也不从消息间隔估算；带有效原生计时的完成或中断事件均可计入。
+
+`0004_first_token_latency.sql` 新增永久 `session_turn_latencies` 表及来源模型上下文检查点。轮次按会话与 `turn_id` 去重，缺少 `turn_id` 时以来源文件与字节偏移识别；追加、重启、来源重放和归档迁移保持一致，90 天事件清理不会删除这些结构化计时。Schema 版本 4、解析器版本 11 会自动重放仍可访问的原始日志以补齐历史；日志没有原生计时字段或已不可访问时无法补齐。CSV 在末尾追加平均延迟毫秒与样本数列，JSON 使用同名 camelCase 字段。
+
+已开始但未结束的轮次，按任务开始到最新已观察日志事件的区间补入活跃时长，扣除可识别的用户等待，并标记为 `span_estimate`。没有新日志时不会按当前墙钟时间外推。该估算随增量日志替换，轮次结束后由正式生命周期计时替换，不与旧快照或空闲间隔估算重复累加；会话只要仍包含估算区间，`activeIsEstimate` 就为 `true`。检查点保存的开始时间及脱敏计时状态支持重启和派生汇总重建；解析器版本 10 会自动重放仍可访问的旧日志以修正进行中轮次的统计。
 
 活跃时长排除可识别的用户答复等待：同步 `request_user_input` 从提问到答复或任务中断之间扣时；普通模式的异步询问不直接扣除提问到答复的整个区间，只在问题待答期间出现明确的 `clock.sleep` 暂停时扣除暂停。同期有工具执行或结构化模型工作记录的区间保留，计划分析、编写和其他工具等待照常计时。仅凭事件间隔长或没有新输出不推断用户等待。
 

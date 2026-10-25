@@ -155,6 +155,10 @@ impl UserWaitTiming {
         }
     }
 
+    pub fn observed_until_ms(&self) -> Option<i64> {
+        self.last_timestamp
+    }
+
     pub fn excluded_intervals(&self) -> Vec<TimeInterval> {
         let mut all = self.completed_waits.clone();
         if let Some(end) = self.last_timestamp {

@@ -82,6 +82,8 @@ pub struct SessionRow {
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
     pub tokens_per_second: Option<f64>,
+    pub average_first_token_latency_ms: Option<f64>,
+    pub first_token_latency_sample_count: i64,
     pub estimated_cost_microusd: Option<i64>,
     pub unpriced_event_count: i64,
     pub archived: bool,
@@ -105,6 +107,8 @@ pub struct ModelRow {
     pub unpriced_event_count: i64,
     pub average_cost_microusd_per_million_tokens: Option<f64>,
     pub average_tokens_per_second: Option<f64>,
+    pub average_first_token_latency_ms: Option<f64>,
+    pub first_token_latency_sample_count: i64,
     pub last_used_at_ms: Option<i64>,
 }
 
@@ -445,7 +449,7 @@ impl UsageQuery {
         let condition = clauses.join(" AND ");
         let order = session_order(&query.sort);
         let direction = if query.descending { "DESC" } else { "ASC" };
-        let nulls_last = if query.sort == "tps" {
+        let nulls_last = if matches!(query.sort.as_str(), "tps" | "ttft") {
             format!("({order}) IS NULL ASC, ")
         } else {
             String::new()
@@ -467,11 +471,14 @@ impl UsageQuery {
                         s.total_tokens,
                         s.input_tokens, s.fresh_input_tokens, s.cached_input_tokens,
                         s.output_tokens, s.reasoning_tokens, s.estimated_cost_microusd,
-                        s.unpriced_event_count, s.archived, s.integrity_status
+                        s.unpriced_event_count, s.archived, s.integrity_status,
+                        l.average_latency_ms, COALESCE(l.sample_count, 0)
                  FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
+                 {latency_join}
                  WHERE {condition}
                  ORDER BY {nulls_last}{order} {direction}, s.id ASC LIMIT ? OFFSET ?",
                 provider = canonical_provider_sql("s.model_provider"),
+                latency_join = SESSION_LATENCY_JOIN_SQL,
             );
             let mut paged_values = values;
             paged_values.push(SqlValue::Integer(i64::from(page_size)));
@@ -499,7 +506,7 @@ impl UsageQuery {
         }
         let order = model_order(&query.sort);
         let direction = if query.descending { "DESC" } else { "ASC" };
-        let nulls_last = if query.sort == "tps" {
+        let nulls_last = if matches!(query.sort.as_str(), "tps" | "ttft") {
             format!("({order}) IS NULL ASC, ")
         } else {
             String::new()
@@ -516,18 +523,28 @@ impl UsageQuery {
                     row.get(0)
                 })?;
             let sql = format!(
-                "SELECT d.model_raw, NULLIF(MAX(d.pricing_model_id), ''),
+                "WITH latency AS (
+                    SELECT d.model_raw, AVG(d.latency_ms) AS average_latency_ms, COUNT(*) AS sample_count
+                    FROM (
+                        SELECT l.*, s.workspace_id, s.archived
+                        FROM session_turn_latencies l JOIN sessions s ON s.id = l.session_id
+                    ) d WHERE {condition} GROUP BY d.model_raw
+                 )
+                 SELECT d.model_raw, NULLIF(MAX(d.pricing_model_id), ''),
                         COUNT(DISTINCT d.session_id), SUM(d.input_tokens),
                         SUM(d.fresh_input_tokens), SUM(d.cached_input_tokens),
                         SUM(d.output_tokens), SUM(d.reasoning_tokens), SUM(d.total_tokens),
                         SUM(d.priced_cost_microusd), SUM(d.priced_event_count),
                         SUM(d.unpriced_event_count), MAX(d.last_activity_at_ms),
-                        SUM(d.active_ms)
-                 FROM session_daily_usage d WHERE {condition}
+                        {tps}, MAX(l.average_latency_ms), COALESCE(MAX(l.sample_count), 0)
+                 FROM session_daily_usage d LEFT JOIN latency l ON l.model_raw = d.model_raw
+                 WHERE {condition}
                  GROUP BY d.model_raw
-                 ORDER BY {nulls_last}{order} {direction}, d.model_raw ASC LIMIT ? OFFSET ?"
+                 ORDER BY {nulls_last}{order} {direction}, d.model_raw ASC LIMIT ? OFFSET ?",
+                tps = MODEL_TPS_SQL,
             );
-            let mut paged_values = values;
+            let mut paged_values = values.clone();
+            paged_values.extend(values);
             paged_values.push(SqlValue::Integer(i64::from(page_size)));
             paged_values.push(SqlValue::Integer(offset));
             let mut statement = connection.prepare(&sql)?;
@@ -555,7 +572,9 @@ impl UsageQuery {
                         unpriced_event_count: row.get(11)?,
                         average_cost_microusd_per_million_tokens: priced_cost
                             .map(|value| value as f64 * 1_000_000_f64 / total_tokens.max(1) as f64),
-                        average_tokens_per_second: tokens_per_second(row.get(6)?, row.get(13)?),
+                        average_tokens_per_second: row.get(13)?,
+                        average_first_token_latency_ms: row.get(14)?,
+                        first_token_latency_sample_count: row.get(15)?,
                         last_used_at_ms: row.get(12)?,
                     })
                 })?
@@ -743,12 +762,15 @@ impl UsageQuery {
                             s.total_tokens,
                             s.input_tokens, s.fresh_input_tokens, s.cached_input_tokens,
                             s.output_tokens, s.reasoning_tokens, s.estimated_cost_microusd,
-                            s.unpriced_event_count, s.archived, s.integrity_status
+                            s.unpriced_event_count, s.archived, s.integrity_status,
+                            l.average_latency_ms, COALESCE(l.sample_count, 0)
                      FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
+                     {latency_join}
                      WHERE s.id = ?1
                        AND LOWER(TRIM(COALESCE(NULLIF(s.primary_model_raw, ''), s.latest_model_raw)))
                            <> 'codex-auto-review'",
-                        provider = canonical_provider_sql("s.model_provider")
+                        provider = canonical_provider_sql("s.model_provider"),
+                        latency_join = SESSION_LATENCY_JOIN_SQL,
                     ),
                     [session_id],
                     session_from_row,
@@ -958,6 +980,18 @@ impl UsageQuery {
     }
 }
 
+// Aggregate timing separately so joining it cannot multiply usage totals.
+const SESSION_LATENCY_JOIN_SQL: &str = "LEFT JOIN (
+    SELECT session_id, AVG(latency_ms) AS average_latency_ms, COUNT(*) AS sample_count
+    FROM session_turn_latencies WHERE LOWER(TRIM(model_raw)) <> 'codex-auto-review'
+    GROUP BY session_id
+) l ON l.session_id = s.id";
+
+// Usage totals retain untimed rows, but TPS and its sorting must use the same
+// timed subset for both numerator and denominator.
+const MODEL_TPS_SQL: &str = "CAST(SUM(CASE WHEN d.active_ms > 0 THEN d.output_tokens ELSE 0 END) AS REAL) \
+                           * 1000.0 / NULLIF(SUM(d.active_ms), 0)";
+
 fn tokens_per_second(output_tokens: i64, active_ms: i64) -> Option<f64> {
     (active_ms > 0).then(|| output_tokens as f64 * 1000.0 / active_ms as f64)
 }
@@ -982,6 +1016,8 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         output_tokens: row.get(15)?,
         reasoning_tokens: row.get(16)?,
         tokens_per_second: tokens_per_second(row.get(15)?, row.get(6)?),
+        average_first_token_latency_ms: row.get(21)?,
+        first_token_latency_sample_count: row.get(22)?,
         estimated_cost_microusd: row.get(17)?,
         unpriced_event_count: row.get(18)?,
         archived: row.get::<_, i64>(19)? != 0,
@@ -1028,6 +1064,7 @@ fn session_order(sort: &str) -> &'static str {
         "cost" => "s.estimated_cost_microusd",
         "active_time" => "s.active_ms",
         "tps" => "CAST(s.output_tokens AS REAL) * 1000.0 / NULLIF(s.active_ms, 0)",
+        "ttft" => "l.average_latency_ms",
         "started" => "s.started_at_ms",
         _ => "COALESCE(s.ended_at_ms, s.started_at_ms)",
     }
@@ -1039,7 +1076,8 @@ fn model_order(sort: &str) -> &'static str {
         "cost" => "SUM(d.priced_cost_microusd)",
         "name" => "model_strength_key(d.model_raw)",
         "recent" => "MAX(d.last_activity_at_ms)",
-        "tps" => "CAST(SUM(d.output_tokens) AS REAL) * 1000.0 / NULLIF(SUM(d.active_ms), 0)",
+        "tps" => MODEL_TPS_SQL,
+        "ttft" => "MAX(l.average_latency_ms)",
         _ => "SUM(d.total_tokens)",
     }
 }
@@ -1213,6 +1251,195 @@ mod tests {
         query
     }
 
+    fn latency_query() -> UsageQuery {
+        let query = tps_query();
+        query.store.with_writer(|transaction| {
+            // The existing model list merges names across canonical providers.
+            transaction.execute("UPDATE session_daily_usage SET model_provider = 'codex_local_access' WHERE session_id = 's2' AND model_raw = 'gpt-5.6-sol'", [])?;
+            transaction.execute("UPDATE sessions SET model_provider = 'codex_local_access' WHERE id = 's2'", [])?;
+            for (offset, (session, model, provider, date, latency)) in [
+                ("s1", "gpt-5.6-sol", "openai", "2026-07-10", 1000),
+                ("s1", "gpt-5.6-sol", "openai", "2026-07-10", 3000),
+                ("s2", "gpt-5.6-sol", "codex_local_access", "2026-07-10", 9000),
+                ("s2", "gpt-other", "openai", "2026-07-10", 500),
+                ("s2", "gpt-5.6-sol", "codex_local_access", "2026-07-11", 19000),
+                ("s4", "gpt-zero", "openai", "2026-07-10", 0),
+                ("s5", "gpt-fast", "anthropic", "2026-07-10", 250),
+                ("s1", "codex-auto-review", "openai", "2026-07-10", 1000000),
+            ].into_iter().enumerate() {
+                transaction.execute(
+                    "INSERT INTO session_turn_latencies (
+                        source_file_id, session_id, byte_offset, turn_id, occurred_at_ms,
+                        local_date, timezone_id, model_provider, model_raw, latency_ms
+                     ) VALUES ((SELECT id FROM source_files WHERE source_key = 'jsonl:s1'),
+                               ?1, ?2, ?3, 1783641601000, ?4, 'UTC', ?5, ?6, ?7)",
+                    params![session, offset as i64, format!("turn-{offset}"), date, provider, model, latency],
+                )?;
+            }
+            Ok(())
+        }).unwrap();
+        query
+    }
+
+    #[test]
+    fn first_token_latency_averages_turns_and_obeys_model_filters_without_multiplying_usage() {
+        let query = latency_query();
+        let mut request = list_query();
+        request.filters.model = Some("gpt-5.6-sol".into());
+        let model = query.models(&request).unwrap().items.remove(0);
+        assert_eq!(model.session_count, 2);
+        assert_eq!(model.output_tokens, 1200);
+        assert_eq!(model.estimated_cost_microusd, Some(500));
+        assert_eq!(model.first_token_latency_sample_count, 3);
+        assert_eq!(model.average_first_token_latency_ms, Some(13000.0 / 3.0));
+        let session = query.session_detail("s1").unwrap().session;
+        assert_eq!(session.total_tokens, 700);
+        assert_eq!(session.first_token_latency_sample_count, 2);
+        assert_eq!(session.average_first_token_latency_ms, Some(2000.0));
+        // Session rows and details report lifetime timing, even for a narrow date filter.
+        let row = query
+            .sessions(&request)
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|row| row.id == "s2")
+            .unwrap();
+        assert_eq!(row.average_first_token_latency_ms, Some(9500.0));
+        assert_eq!(row.first_token_latency_sample_count, 3);
+        request.filters.archived = ArchiveFilter::Active;
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_first_token_latency_ms,
+            Some(2000.0)
+        );
+        request.filters.archived = ArchiveFilter::All;
+        request.filters.model_provider = Some("custom".into());
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_first_token_latency_ms,
+            Some(9000.0)
+        );
+        request.filters.model_provider = Some("openai".into());
+        assert_eq!(
+            query.models(&request).unwrap().items[0].first_token_latency_sample_count,
+            2
+        );
+        request.filters.model_provider = None;
+        request.filters.range.start_ms = Some(1_783_728_000_000);
+        request.filters.range.end_ms = Some(1_783_814_400_000);
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_first_token_latency_ms,
+            Some(19000.0)
+        );
+        request = list_query();
+        request.filters.model = Some("gpt-other".into());
+        assert_eq!(
+            query.models(&request).unwrap().items[0].average_first_token_latency_ms,
+            Some(500.0)
+        );
+        request.filters.workspace_id = Some("missing-workspace".into());
+        assert!(query.models(&request).unwrap().items.is_empty());
+        query
+            .store
+            .with_writer(|transaction| {
+                transaction.execute("UPDATE workspaces SET ignored = 1 WHERE id = 'w1'", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(query.models(&list_query()).unwrap().items.is_empty());
+        assert!(query.sessions(&list_query()).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn first_token_latency_sorting_distinguishes_zero_from_missing_and_paginates() {
+        let query = latency_query();
+        let mut request = list_query();
+        request.sort = "ttft".into();
+        for (descending, session_ids, model_names) in [
+            (
+                true,
+                vec!["s2", "s1", "s5", "s4", "s3"],
+                vec![
+                    "gpt-5.6-sol",
+                    "gpt-other",
+                    "gpt-fast",
+                    "gpt-zero",
+                    "gpt-null",
+                ],
+            ),
+            (
+                false,
+                vec!["s4", "s5", "s1", "s2", "s3"],
+                vec![
+                    "gpt-zero",
+                    "gpt-fast",
+                    "gpt-other",
+                    "gpt-5.6-sol",
+                    "gpt-null",
+                ],
+            ),
+        ] {
+            request.descending = descending;
+            let sessions = query.sessions(&request).unwrap();
+            assert_eq!(
+                sessions
+                    .items
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                session_ids
+            );
+            assert_eq!(
+                sessions
+                    .items
+                    .last()
+                    .unwrap()
+                    .average_first_token_latency_ms,
+                None
+            );
+            assert_eq!(
+                sessions
+                    .items
+                    .last()
+                    .unwrap()
+                    .first_token_latency_sample_count,
+                0
+            );
+            let models = query.models(&request).unwrap();
+            assert_eq!(
+                models
+                    .items
+                    .iter()
+                    .map(|row| row.model.as_str())
+                    .collect::<Vec<_>>(),
+                model_names
+            );
+            assert_eq!(
+                models.items.last().unwrap().average_first_token_latency_ms,
+                None
+            );
+            assert_eq!(
+                models
+                    .items
+                    .last()
+                    .unwrap()
+                    .first_token_latency_sample_count,
+                0
+            );
+            assert_eq!(
+                models
+                    .items
+                    .iter()
+                    .find(|row| row.model == "gpt-zero")
+                    .unwrap()
+                    .average_first_token_latency_ms,
+                Some(0.0)
+            );
+        }
+        request.page_size = 2;
+        request.page = 2;
+        assert_eq!(query.sessions(&request).unwrap().items[0].id, "s3");
+        assert_eq!(query.models(&request).unwrap().items[0].model, "gpt-null");
+    }
+
     #[test]
     fn tps_uses_output_and_active_milliseconds_and_survives_event_retention() {
         assert_eq!(tokens_per_second(25, 500), Some(50.0));
@@ -1241,6 +1468,51 @@ mod tests {
                 .tokens_per_second,
             Some(0.0)
         );
+    }
+
+    #[test]
+    fn model_tps_excludes_untimed_usage_without_changing_totals_or_sorting() {
+        let query = tps_query();
+        query
+            .store
+            .with_writer(|transaction| {
+                transaction.execute(
+                    "UPDATE session_daily_usage SET model_raw = 'gpt-5.6-sol',
+                    output_tokens = 50000, total_tokens = 50000 WHERE session_id = 's3'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let mut request = list_query();
+        request.sort = "tps".into();
+        let models = query.models(&request).unwrap();
+        assert_eq!(
+            models
+                .items
+                .iter()
+                .map(|row| row.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-fast", "gpt-other", "gpt-5.6-sol", "gpt-zero"],
+        );
+        let model = models
+            .items
+            .iter()
+            .find(|row| row.model == "gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(model.average_tokens_per_second, Some(30.0));
+        assert_eq!(model.output_tokens, 51200);
+        assert_eq!(model.session_count, 3);
+        request.descending = false;
+        assert_eq!(
+            query.models(&request).unwrap().items[1].model,
+            "gpt-5.6-sol"
+        );
+        request.filters.model = Some("gpt-5.6-sol".into());
+        request.filters.archived = ArchiveFilter::Active;
+        let model = query.models(&request).unwrap().items.remove(0);
+        assert_eq!(model.average_tokens_per_second, Some(60.0));
+        assert_eq!(model.output_tokens, 50600);
     }
 
     #[test]
