@@ -135,7 +135,8 @@ fn sanitize_tool_name(raw: &str) -> Cow<'_, str> {
 }
 
 fn is_search_tool(name: &str) -> bool {
-    name.contains("search")
+    matches!(name, "grep" | "glob" | "codesearch" | "websearch")
+        || name.contains("search")
         || name == "rg"
         || name.ends_with("_find")
         || name.starts_with("find_")
@@ -152,14 +153,16 @@ fn is_read_tool(name: &str) -> bool {
 }
 
 fn is_edit_tool(name: &str) -> bool {
-    name.contains("apply_patch")
+    matches!(name, "edit" | "multiedit" | "notebookedit" | "patch")
+        || name.contains("apply_patch")
         || name.contains("edit_file")
         || name.contains("replace_in_file")
         || name.contains("multi_edit")
 }
 
 fn is_write_tool(name: &str) -> bool {
-    name.contains("write_file")
+    name == "write"
+        || name.contains("write_file")
         || name.contains("create_file")
         || name.contains("save_file")
         || name.contains("delete_file")

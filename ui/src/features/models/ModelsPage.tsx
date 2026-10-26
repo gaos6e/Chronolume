@@ -25,6 +25,10 @@ const EMPTY_PRICE: ModelPriceInput = {
   provider: 'openai', pricingId: '', displayName: '', inputPerMillionUsd: '',
   outputPerMillionUsd: '', cacheReadPerMillionUsd: '', cacheWritePerMillionUsd: undefined,
 };
+const PRICE_PROVIDERS: Record<string, string> = {
+  openai: 'OpenAI', anthropic: 'Anthropic', deepseek: 'DeepSeek', google: 'Google Gemini',
+  zai: 'Z.AI · GLM', minimax: 'MiniMax', moonshotai: 'Kimi', alibaba: 'Qwen', xai: 'Grok', opencode: 'OpenCode',
+};
 
 export function ModelsPage({ filters }: { filters: UsageFilters }) {
   const { t } = useTranslation();
@@ -33,12 +37,17 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
   const latencyTitle = (count: number) => `${latencyDescription} ${t('有效轮次：{{count}}', { count })} ${t('模型显示当前筛选范围内的统计。')}`;
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<'usage' | 'prices'>('usage');
+  const [priceProvider, setPriceProvider] = useState('');
+  const [priceSearch, setPriceSearch] = useState('');
   const list = useListState(filters, 'name');
   const [editing, setEditing] = useState<ModelPriceInput>();
   const [updatePreview, setUpdatePreview] = useState<Awaited<ReturnType<typeof previewPriceUpdate>>>();
   const request = { filters, search: list.querySearch, sort: list.sort, descending: list.descending, page: list.page, pageSize: 30 };
   const models = useQuery({ queryKey: ['models', request], queryFn: () => getModels(request), placeholderData: keepPreviousData });
   const prices = useQuery({ queryKey: ['model-prices'], queryFn: () => listModelPrices(true), enabled: tab === 'prices' });
+  const priceProviders = [...new Set(prices.data?.map((price) => price.provider) ?? [])].sort();
+  const visiblePrices = prices.data?.filter((price) => (!priceProvider || price.provider === priceProvider)
+    && `${price.provider} ${price.pricingId} ${price.displayName}`.toLowerCase().includes(priceSearch.trim().toLowerCase()));
   const finishMutation = () => {
     setEditing(undefined);
     void queryClient.invalidateQueries({ queryKey: ['model-prices'] });
@@ -82,7 +91,7 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
           <tbody>{models.data?.items.map((model) => <tr key={model.model}>
             <td><strong>{model.model}</strong><small>{model.pricingModelId ? `${t('计价')} ${model.pricingModelId}` : t('未匹配价格')}</small></td>
             <td>{model.sessionCount.toLocaleString()}</td><td>{formatTokens(model.freshInputTokens)}</td>
-            <td>{formatTokens(model.cachedInputTokens)}</td><td>{formatTokens(model.outputTokens)}</td>
+            <td>{formatTokens(model.cachedInputTokens)}{(model.cacheWriteTokens ?? 0) > 0 && <small>{t('写入')} {formatTokens(model.cacheWriteTokens ?? 0)}</small>}</td><td>{formatTokens(model.outputTokens)}</td>
             <td>{formatTokens(model.reasoningTokens)}</td>
             <td className="tps-value" title={tpsDescription}>{formatTps(model.averageTokensPerSecond)}</td>
             <td className="tps-value" title={latencyTitle(model.firstTokenLatencySampleCount)}>{formatLatency(model.averageFirstTokenLatencyMs)}</td>
@@ -95,23 +104,28 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
         )}
       </> : <>
         <div className="pricing-toolbar">
-          <p>{t('价格单位为 USD / 1M Token。修改后只重算本地汇总，不重新读取 JSONL。')}</p>
+          <div><p>{t('价格单位为 USD / 1M Token。修改后只重算本地汇总，不重新读取 JSONL。')}</p><p className="form-hint">{t('各品牌采用官网标准美元 Token 价，渠道专属价格优先；无渠道价格时采用对应品牌参考价。')}</p><p className="form-hint">{t('DeepSeek 按请求时间区分峰谷；带区间的型号按单次输入选择价格。同一模型的历史别名统一合并统计。')}</p></div>
           <div className="toolbar-actions">
-            <button type="button" className="quiet-button" disabled={busy || checkUpdate.isPending || !isTauriRuntime()} onClick={() => { resetFeedback(); checkUpdate.mutate(); }}><CloudDownload />{checkUpdate.isPending ? t('正在检查') : t('检查官方更新')}</button>
+            <button type="button" className="quiet-button" disabled={busy || checkUpdate.isPending || !isTauriRuntime()} onClick={() => { resetFeedback(); checkUpdate.mutate(); }}><CloudDownload />{checkUpdate.isPending ? t('正在检查') : t('检查 OpenAI 更新')}</button>
             <button type="button" className="primary-button" disabled={busy || !isTauriRuntime()} onClick={() => openEditor(EMPTY_PRICE)}><CircleDollarSign />{t('添加价格')}</button>
           </div>
         </div>
         <ActionFeedback error={checkUpdate.error ?? remove.error ?? restore.error} pending={checkUpdate.isPending || remove.isPending || restore.isPending} />
         <ActionFeedback success={(save.isSuccess || remove.isSuccess || restore.isSuccess || applyUpdate.isSuccess) && '价格已更新，本地统计已重算。'} />
         <QueryStatus loading={prices.isLoading && !prices.data} refreshing={prices.isFetching && Boolean(prices.data)} error={prices.error} onRetry={() => void prices.refetch()} />
+        {prices.data && <div className="price-catalog-filters">
+          <label><span>{t('价格来源')}</span><select value={priceProvider} onChange={(event) => setPriceProvider(event.target.value)}><option value="">{t('全部品牌与渠道')}</option>{priceProviders.map((provider) => <option key={provider} value={provider}>{PRICE_PROVIDERS[provider] ?? provider}</option>)}</select></label>
+          <label><span>{t('查找模型')}</span><input type="search" value={priceSearch} onChange={(event) => setPriceSearch(event.target.value)} placeholder={t('搜索名称或计价 ID')} /></label>
+          <small>{visiblePrices?.length ?? 0} / {prices.data.length}</small>
+        </div>}
         {prices.data && (
         <div className="data-table-wrap" role="region" aria-label={t('价格表')} tabIndex={0}><table className="data-table">
           <thead><tr><th>{t('计价 ID')}</th><th>{t('输入')}</th><th>{t('缓存读')}</th><th>{t('缓存写')}</th><th>{t('输出')}</th><th>{t('来源')}</th><th><span className="sr-only">{t('操作')}</span></th></tr></thead>
-          <tbody>{prices.data?.map((price) => <tr key={`${price.provider}-${price.pricingId}`} className={price.isDeleted ? 'deleted-row' : ''}>
+          <tbody>{visiblePrices?.map((price) => <tr key={`${price.provider}-${price.pricingId}`} className={price.isDeleted ? 'deleted-row' : ''}>
             <td><strong>{price.displayName}</strong><small>{price.provider} / {price.pricingId}</small></td>
             <td>${price.inputPerMillionUsd}</td><td>${price.cacheReadPerMillionUsd}</td>
             <td>{price.cacheWritePerMillionUsd ? `$${price.cacheWritePerMillionUsd}` : 'N/A'}</td><td>${price.outputPerMillionUsd}</td>
-            <td>{price.isBuiltin ? t('内置官方快照') : t('用户价格')}{price.isDeleted && <small className="warning-copy">{t('已删除')}</small>}{price.isOverridden && <small>{t('已覆盖')}</small>}{price.pricingId === 'gpt-5.5' && <small>{t('标准价适用于不超过 272K 输入')}</small>}</td>
+            <td className="price-provenance">{price.sourceUrl && price.isBuiltin ? <a href={price.sourceUrl} target="_blank" rel="noreferrer">{t('官网价格')}</a> : price.isBuiltin ? t('内置官方快照') : t('用户价格')}{price.sourceUpdatedAtMs && <small>{new Date(price.sourceUpdatedAtMs).toLocaleDateString(undefined, { timeZone: 'UTC' })}</small>}{price.pricingNote && !price.isOverridden && <small>{t(price.pricingNote)}</small>}{price.isDeleted && <small className="warning-copy">{t('已删除')}</small>}{price.isOverridden && <small>{t('已覆盖')}</small>}{price.pricingId === 'gpt-5.5' && <small>{t('标准价适用于不超过 272K 输入')}</small>}</td>
             <td><div className="row-actions">
               {!price.isDeleted && <button type="button" className="icon-button" disabled={busy} aria-label={t('编辑价格')} onClick={() => openEditor({
                 provider: price.provider, pricingId: price.pricingId, displayName: price.displayName,
@@ -122,7 +136,7 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
               {price.isBuiltin && (price.isDeleted || price.isOverridden) && <button type="button" className="icon-button" disabled={busy} aria-label={t('恢复内置价格')} onClick={() => { resetFeedback(); restore.mutate(price); }}><RotateCcw /></button>}
             </div></td>
           </tr>)}</tbody>
-        </table>{!prices.isLoading && prices.data?.length === 0 && <div className="table-empty">{t('价格表为空。')}</div>}</div>
+        </table>{!prices.isLoading && visiblePrices?.length === 0 && <div className="table-empty">{t('没有匹配的价格。')}</div>}</div>
         )}
       </>}
       </div>

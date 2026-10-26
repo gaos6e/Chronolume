@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   BootstrapStatus,
+  SourceSettings,
+  AgentSourceSetting,
   AppPreferences,
   DashboardSnapshot,
   DiagnosticsSnapshot,
@@ -48,7 +50,7 @@ const emptySyncStatus: SyncStatus = {
 export async function getBootstrapStatus(): Promise<BootstrapStatus> {
   if (!isTauriRuntime()) {
     return {
-      appVersion: '2.1.11-dev',
+      appVersion: '2.2.0-dev',
       platform: 'browser',
       dataDirectory: '浏览器预览模式',
       databasePath: '浏览器预览模式',
@@ -250,4 +252,11 @@ export async function saveAppPreferences(preferences: AppPreferences): Promise<A
   return isTauriRuntime()
     ? invoke<AppPreferences>('save_app_preferences', { preferences })
     : preferences;
+}
+
+export async function getSourceSettings(): Promise<AgentSourceSetting[]> {
+  return isTauriRuntime() ? invoke<AgentSourceSetting[]>('get_source_settings') : [];
+}
+export async function saveSourceSettings(settings: SourceSettings): Promise<AgentSourceSetting[]> {
+  return invoke<AgentSourceSetting[]>('save_source_settings', { settings });
 }

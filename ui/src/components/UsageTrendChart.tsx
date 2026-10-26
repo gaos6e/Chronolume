@@ -18,6 +18,7 @@ export type TrendSeriesKey =
   | 'freshInputTokens'
   | 'outputTokens'
   | 'cachedInputTokens'
+  | 'cacheWriteTokens'
   | 'reasoningTokens'
   | 'estimatedCostMicrousd';
 
@@ -37,6 +38,7 @@ const SERIES: SeriesDefinition[] = [
   { key: 'freshInputTokens', label: '新增输入', color: '#6c8cff', gradient: 'inputGradient' },
   { key: 'outputTokens', label: '输出', color: '#45d6a4', gradient: 'outputGradient' },
   { key: 'cachedInputTokens', label: '缓存读取', color: '#a57cff', gradient: 'cachedGradient' },
+  { key: 'cacheWriteTokens', label: '缓存写入', color: '#4eacae', gradient: 'writeGradient' },
   { key: 'reasoningTokens', label: '推理', color: '#f1a35b', gradient: 'reasoningGradient' },
   { key: 'estimatedCostMicrousd', label: '估算成本', color: '#f06b78', cost: true },
 ];
@@ -202,7 +204,7 @@ export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
               <tbody>{data.map((point) => <tr key={point.timestampMs}>
                 <td>{new Date(point.timestampMs).toLocaleString()}</td>
                 {SERIES.filter((series) => visible.has(series.key)).map((series) => <td key={series.key}>
-                  {series.key === 'estimatedCostMicrousd' ? formatCost(point[series.key]) : formatExact(point[series.key])}
+                  {series.key === 'estimatedCostMicrousd' ? formatCost(point[series.key]) : formatExact(point[series.key] ?? 0)}
                 </td>)}
               </tr>)}</tbody>
             </table>

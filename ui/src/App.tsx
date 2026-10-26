@@ -178,16 +178,16 @@ export function App() {
   const statusLabel = useMemo(() => {
     if (!isTauriRuntime()) return t('浏览器预览');
     if (syncing) return t('后台索引中');
-    if (dashboard.isError || sync.data?.phase === 'failed') return t('需要关注');
+    if (dashboard.isError || sync.data?.phase === 'failed' || (sync.data?.fileErrors ?? 0) > 0) return t('需要关注');
     return t('本地数据');
-  }, [dashboard.isError, sync.data?.phase, syncing, t]);
+  }, [dashboard.isError, sync.data?.phase, sync.data?.fileErrors, syncing, t]);
 
   const refresh = () => {
     refreshMutation.mutate();
     void dashboard.refetch();
   };
   const pageCopy: Record<PageId, { eyebrow: string; title: string; description: string }> = {
-    overview: { eyebrow: 'CHRONOLUME · LOCAL FIRST', title: t('本地用量总览'), description: t('直接读取本机 Codex 数据；原始消息与工具参数不会进入分析库。') },
+    overview: { eyebrow: 'CHRONOLUME · LOCAL FIRST', title: t('本地用量总览'), description: t('汇聚 Codex、Claude Code、OpenCode 与 DeepSeek Harness 的本地用量，照见你的工作节奏。') },
     projects: { eyebrow: 'WORKSPACES', title: t('项目与工作区'), description: t('按真实工作区汇总 Token、成本、活跃时间和会话。') },
     sessions: { eyebrow: 'SESSIONS', title: t('会话与事件'), description: t('只显示结构化统计；最近 90 天 Token 事件由服务端分页保留。') },
     models: { eyebrow: 'MODELS & PRICING', title: t('模型与成本'), description: t('检查模型分布、未定价事件和本地价格覆盖。') },
@@ -317,7 +317,7 @@ export function App() {
         </Suspense></ErrorBoundary>
 
         <footer className="app-footer">
-          <span>Chronolume {bootstrap.data?.appVersion ?? '2.1.11'}</span>
+          <span>Chronolume {bootstrap.data?.appVersion ?? '2.2.0'}</span>
           <span>Schema v{bootstrap.data?.schemaVersion ?? '…'}</span>
           <span>{bootstrap.data ? formatBytes(bootstrap.data.databaseSizeBytes) : '—'} {t('本地索引')}</span>
           {dashboard.isFetching && <span className="footer-refreshing">{t('正在刷新查询')}</span>}

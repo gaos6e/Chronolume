@@ -1,10 +1,15 @@
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::str::FromStr;
 
+pub mod official;
+
 pub const OFFICIAL_PRICING_SOURCE: &str = "https://developers.openai.com/api/docs/pricing";
-pub const BUILTIN_PRICING_REVISION: i64 = 2_026_092_901;
+pub const BUILTIN_PRICING_REVISION: i64 = 2_026_102_602;
+pub const ANTHROPIC_PRICING_SOURCE: &str =
+    "https://platform.claude.com/docs/en/about-claude/pricing";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedModelId {
@@ -26,6 +31,8 @@ pub struct ModelPrice {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PriceableTokens {
+    /// Subset of cache_write charged at the vendor's one-hour rate.
+    pub cache_write_1h: u64,
     pub fresh_input: u64,
     pub cached_input: u64,
     pub output: u64,
@@ -47,10 +54,11 @@ pub enum PriceQuote {
 #[derive(Debug, Clone, Default)]
 pub struct PricingCatalog {
     prices: Vec<ModelPrice>,
+    overrides: HashSet<(String, String)>,
 }
 
 pub fn builtin_model_prices() -> Vec<ModelPrice> {
-    [
+    let mut prices: Vec<_> = [
         ("gpt-6.1-sol", "2", "10", "0.1", Some("2.5")),
         ("gpt-6-astra", "10", "50", "1", Some("12.5")),
         ("gpt-6-sol", "2", "10", "0.2", Some("2.5")),
@@ -91,7 +99,55 @@ pub fn builtin_model_prices() -> Vec<ModelPrice> {
             .map(|value| Decimal::from_str(value).expect("built-in cache-write price")),
         revision: BUILTIN_PRICING_REVISION,
     })
-    .collect()
+    .collect();
+    // Standard, global API pricing snapshot checked 2026-10-26. One-hour writes
+    // use 2x input; longer-context/fast/region surcharges are outside this estimate.
+    prices.extend(
+        [
+            ("claude-fable-5-1", "10", "50", "0.25"),
+            ("claude-mythos-5-1", "10", "50", "0.25"),
+            ("claude-opus-5-5", "4", "20", "0.20"),
+            ("claude-sonnet-5-5", "2", "10", "0.10"),
+            ("claude-haiku-5-5", "0.1", "0.5", "0.01"),
+            ("claude-fable-5", "10", "50", "1"),
+            ("claude-mythos-5", "10", "50", "1"),
+            ("claude-opus-5", "5", "25", "0.5"),
+            ("claude-opus-4-8", "5", "25", "0.5"),
+            ("claude-opus-4-7", "5", "25", "0.5"),
+            ("claude-opus-4-6", "5", "25", "0.5"),
+            ("claude-opus-4-5", "5", "25", "0.5"),
+            ("claude-opus-4-1", "15", "75", "1.5"),
+            ("claude-opus-4", "15", "75", "1.5"),
+            ("claude-sonnet-5", "2", "10", "0.2"),
+            ("claude-sonnet-4-6", "3", "15", "0.3"),
+            ("claude-sonnet-4-5", "3", "15", "0.3"),
+            ("claude-sonnet-4", "3", "15", "0.3"),
+            ("claude-haiku-4-5", "1", "5", "0.1"),
+            ("claude-3-5-haiku", "0.8", "4", "0.08"),
+        ]
+        .into_iter()
+        .map(|(id, input, output, read)| {
+            let input = Decimal::from_str(input).expect("built-in Anthropic input price");
+            ModelPrice {
+                provider: "anthropic".into(),
+                pricing_id: id.into(),
+                input_per_million_usd: input,
+                output_per_million_usd: Decimal::from_str(output)
+                    .expect("built-in Anthropic output price"),
+                cache_read_per_million_usd: Decimal::from_str(read)
+                    .expect("built-in Anthropic cache price"),
+                cache_write_per_million_usd: Some(input * Decimal::new(125, 2)),
+                revision: BUILTIN_PRICING_REVISION,
+            }
+        }),
+    );
+    for price in official::prices() {
+        prices.retain(|existing| {
+            existing.provider != price.provider || existing.pricing_id != price.pricing_id
+        });
+        prices.push(price);
+    }
+    prices
 }
 
 impl PricingCatalog {
@@ -103,34 +159,126 @@ impl PricingCatalog {
                 .cmp(&left.pricing_id.len())
                 .then_with(|| left.pricing_id.cmp(&right.pricing_id))
         });
-        Self { prices }
+        Self {
+            prices,
+            overrides: HashSet::new(),
+        }
+    }
+
+    pub fn with_overrides(mut self, overrides: HashSet<(String, String)>) -> Self {
+        self.overrides = overrides;
+        self
     }
 
     pub fn quote(&self, provider: &str, raw_model: &str, tokens: PriceableTokens) -> PriceQuote {
+        self.quote_request(provider, raw_model, tokens, None, None)
+    }
+
+    pub fn quote_at(
+        &self,
+        provider: &str,
+        raw_model: &str,
+        tokens: PriceableTokens,
+        at_ms: i64,
+    ) -> PriceQuote {
+        self.quote_request(provider, raw_model, tokens, Some(at_ms), None)
+    }
+
+    /// Aggregated summaries already carry their request bracket; never choose a
+    /// context tier from a whole day's or segment's combined input tokens.
+    pub fn quote_summary(
+        &self,
+        provider: &str,
+        raw_model: &str,
+        tokens: PriceableTokens,
+        stored_id: &str,
+    ) -> PriceQuote {
+        self.quote_request(provider, raw_model, tokens, None, Some(stored_id))
+    }
+
+    fn quote_request(
+        &self,
+        provider: &str,
+        raw_model: &str,
+        tokens: PriceableTokens,
+        at: Option<i64>,
+        stored_id: Option<&str>,
+    ) -> PriceQuote {
         let normalized = normalize_model_id(raw_model);
         let provider = provider.trim().to_ascii_lowercase();
         if is_cost_excluded(&provider, &normalized.exact) {
             return PriceQuote::Excluded;
         }
-        let price = normalized
+        let exact_price = normalized
             .candidates
             .iter()
-            .find_map(|candidate| self.find_exact(&provider, candidate))
+            .find_map(|candidate| self.find_exact(&provider, candidate));
+        let price = exact_price
             .or_else(|| {
-                // Codex 的 `custom` provider 常用于兼容 OpenAI API 的本地网关。用户为
-                // custom 配置的价格始终优先；没有时仅对“精确官方模型 ID”采用 OpenAI
-                // 参考价，不把 Azure/其他 provider 或未知后缀强行映射过来。
-                (provider == "custom").then(|| {
-                    normalized
-                        .candidates
-                        .iter()
-                        .find_map(|candidate| self.find_exact("openai", candidate))
-                })?
+                normalized.candidates.iter().find_map(|candidate| {
+                    self.find_exact(official::provider_alias(&provider), candidate)
+                })
+            })
+            .or_else(|| {
+                normalized
+                    .candidates
+                    .iter()
+                    .find_map(|candidate| self.find_exact(official::vendor(candidate)?, candidate))
             });
-        let Some(price) = price else {
+        let Some(mut price) = price else {
             return PriceQuote::Unpriced;
         };
-        if tokens.cache_write > 0 && price.cache_write_per_million_usd.is_none() {
+        let overridden = self
+            .overrides
+            .contains(&(price.provider.clone(), price.pricing_id.clone()));
+        let tier = if let Some(stored) = stored_id {
+            stored
+                .split_once('@')
+                .filter(|(base, _)| *base == price.pricing_id)
+                .map(|_| stored.to_string())
+        } else {
+            official::tier_id(&price.provider, &price.pricing_id, tokens, at)
+                .or_else(|| {
+                    overridden
+                        .then(|| {
+                            official::tier_id(
+                                official::provider_alias(&price.provider),
+                                &price.pricing_id,
+                                tokens,
+                                at,
+                            )
+                        })
+                        .flatten()
+                })
+                .or_else(|| {
+                    overridden
+                        .then(|| {
+                            official::tier_id(
+                                official::vendor(&price.pricing_id)?,
+                                &price.pricing_id,
+                                tokens,
+                                at,
+                            )
+                        })
+                        .flatten()
+                })
+        };
+        // Keep the original request bracket even while a flat user override is
+        // active, so restoring official prices after retention remains lossless.
+        let accounting_id = tier.clone().unwrap_or_else(|| price.pricing_id.clone());
+        if !overridden {
+            if let Some(tier) = tier {
+                let Some(bracket) = self.find_exact(&price.provider, &tier) else {
+                    return PriceQuote::Unpriced;
+                };
+                price = bracket;
+            }
+        }
+        if tokens.cache_write_1h > tokens.cache_write
+            || (tokens.cache_write_1h > 0
+                && !matches!(price.provider.as_str(), "anthropic" | "moonshotai"))
+            || (tokens.cache_write > 0 && price.cache_write_per_million_usd.is_none())
+        {
             return PriceQuote::Unpriced;
         }
 
@@ -138,13 +286,17 @@ impl PricingCatalog {
             + token_cost(tokens.cached_input, price.cache_read_per_million_usd)
             + token_cost(tokens.output, price.output_per_million_usd)
             + token_cost(
-                tokens.cache_write,
+                tokens.cache_write.saturating_sub(tokens.cache_write_1h),
                 price.cache_write_per_million_usd.unwrap_or(Decimal::ZERO),
+            )
+            + token_cost(
+                tokens.cache_write_1h,
+                price.input_per_million_usd * Decimal::from(2),
             );
         let total_microusd = total.round().to_i64().unwrap_or(i64::MAX);
 
         PriceQuote::Priced {
-            pricing_id: price.pricing_id.clone(),
+            pricing_id: accounting_id,
             revision: price.revision,
             total_microusd,
         }
@@ -180,9 +332,37 @@ pub fn is_cost_excluded(_provider: &str, model: &str) -> bool {
     is_statistics_excluded_model(model)
 }
 
-/// 生成从最具体到最宽泛的计价候选，不改变或限制原始模型字符串。
+/// Canonical identity for the explicitly unified Sol model. Other model names
+/// retain their existing identity, including unrelated Fast model variants.
+pub fn canonical_model_name(raw: &str) -> String {
+    let mut name = raw
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(raw)
+        .to_ascii_lowercase();
+    if let Some((base, effort)) = name.split_once(':')
+        && matches!(effort, "minimal" | "low" | "medium" | "high" | "xhigh")
+    {
+        name = base.to_string();
+    }
+    loop {
+        if matches!(name.as_str(), "gpt-6.1-sol" | "gpt-6.1-sol-fast") {
+            return "gpt-6.1-sol".into();
+        }
+        let Some(next) = strip_iso_date_suffix(&name)
+            .or_else(|| strip_compact_date_suffix(&name))
+            .or_else(|| strip_reasoning_suffix(&name))
+        else {
+            return raw.to_string();
+        };
+        name = next;
+    }
+}
+
+/// 生成从最具体到最宽泛的计价候选，先统一已确认的模型身份。
 pub fn normalize_model_id(raw: &str) -> NormalizedModelId {
-    let mut exact = raw.trim().to_ascii_lowercase();
+    let mut exact = canonical_model_name(raw).trim().to_ascii_lowercase();
     if let Some(last) = exact.rsplit('/').next()
         && last != exact
     {
@@ -202,6 +382,7 @@ pub fn normalize_model_id(raw: &str) -> NormalizedModelId {
         push_candidate(&mut candidates, strip_compact_date_suffix(&candidate));
         push_candidate(&mut candidates, strip_reasoning_suffix(&candidate));
         push_candidate(&mut candidates, historical_tier_alias(&candidate));
+        push_candidate(&mut candidates, official::alias(&candidate));
         index += 1;
     }
 
@@ -371,6 +552,7 @@ mod tests {
     fn prices_current_codex_exactly_and_retired_codex_by_visible_tier_alias() {
         let catalog = PricingCatalog::new(builtin_model_prices());
         let tokens = PriceableTokens {
+            cache_write_1h: 0,
             fresh_input: 1_000_000,
             cached_input: 0,
             output: 0,
@@ -392,6 +574,7 @@ mod tests {
     fn prices_gpt_6_astra_at_the_official_standard_short_context_rate() {
         let catalog = PricingCatalog::new(builtin_model_prices());
         let tokens = PriceableTokens {
+            cache_write_1h: 0,
             fresh_input: 1_000_000,
             cached_input: 1_000_000,
             output: 1_000_000,
@@ -408,6 +591,7 @@ mod tests {
     fn prices_gpt_6_sol_and_luna_at_the_official_standard_short_context_rates() {
         let catalog = PricingCatalog::new(builtin_model_prices());
         let tokens = PriceableTokens {
+            cache_write_1h: 0,
             fresh_input: 1_000_000,
             cached_input: 1_000_000,
             output: 1_000_000,
@@ -429,6 +613,7 @@ mod tests {
     fn prices_gpt_6_1_sol_and_updated_gpt_5_6_rates() {
         let catalog = PricingCatalog::new(builtin_model_prices());
         let tokens = PriceableTokens {
+            cache_write_1h: 0,
             fresh_input: 1_000_000,
             cached_input: 1_000_000,
             output: 1_000_000,
@@ -483,6 +668,7 @@ mod tests {
             "OpenAI",
             "openai/GPT-5.6-SOL",
             PriceableTokens {
+                cache_write_1h: 0,
                 fresh_input: 1000,
                 cached_input: 4000,
                 output: 500,
@@ -507,6 +693,7 @@ mod tests {
                 "openai",
                 "unknown-future-model",
                 PriceableTokens {
+                    cache_write_1h: 0,
                     fresh_input: 1,
                     cached_input: 0,
                     output: 0,
@@ -525,6 +712,7 @@ mod tests {
                 "openai",
                 "codex-auto-review",
                 PriceableTokens {
+                    cache_write_1h: 0,
                     fresh_input: 10,
                     cached_input: 20,
                     output: 3,
@@ -543,6 +731,7 @@ mod tests {
                 "openai",
                 "gpt-5.3-codex",
                 PriceableTokens {
+                    cache_write_1h: 0,
                     fresh_input: 10,
                     cached_input: 0,
                     output: 1,
@@ -560,7 +749,7 @@ mod tests {
             catalog.quote(
                 "custom",
                 "gpt-5",
-                PriceableTokens { fresh_input: 10, cached_input: 0, output: 1, cache_write: 0 },
+                PriceableTokens { fresh_input: 10, cached_input: 0, output: 1, cache_write: 0, cache_write_1h: 0 },
             ),
             PriceQuote::Priced { pricing_id, .. } if pricing_id == "gpt-5"
         ));
@@ -569,6 +758,7 @@ mod tests {
                 "custom",
                 "gpt-5.3-codex",
                 PriceableTokens {
+                    cache_write_1h: 0,
                     fresh_input: 10,
                     cached_input: 0,
                     output: 1,
@@ -577,5 +767,199 @@ mod tests {
             ),
             PriceQuote::Unpriced,
         );
+    }
+
+    fn usage(input: u64) -> PriceableTokens {
+        PriceableTokens {
+            fresh_input: input,
+            cached_input: 0,
+            output: 0,
+            cache_write: 0,
+            cache_write_1h: 0,
+        }
+    }
+
+    fn at(iso: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(iso)
+            .unwrap()
+            .timestamp_millis()
+    }
+
+    #[test]
+    fn requested_alias_is_the_same_model_identity_and_does_not_generalize() {
+        let catalog = PricingCatalog::new(builtin_model_prices());
+        for provider in ["openai", "custom", "gateway"] {
+            assert_eq!(
+                catalog.quote(provider, "openai/gpt-6.1-sol-fast-high", usage(1_000_000)),
+                catalog.quote("openai", "gpt-6.1-sol", usage(1_000_000))
+            );
+        }
+        assert_eq!(
+            catalog.quote("openai", "gpt-6-astra-fast", usage(1)),
+            PriceQuote::Unpriced
+        );
+        assert_eq!(normalize_model_id("gpt-6.1-sol-fast").exact, "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn official_vendor_references_keep_route_and_user_prices_prioritized() {
+        let mut prices = builtin_model_prices();
+        prices.push(ModelPrice {
+            provider: "gateway".into(),
+            pricing_id: "deepseek-v4-pro".into(),
+            input_per_million_usd: Decimal::from(9),
+            output_per_million_usd: Decimal::from(10),
+            cache_read_per_million_usd: Decimal::ZERO,
+            cache_write_per_million_usd: None,
+            revision: 1,
+        });
+        let catalog = PricingCatalog::new(prices);
+        assert!(matches!(
+            catalog.quote("deepseek-official", "deepseek-v4-pro", usage(1_000_000)),
+            PriceQuote::Priced {
+                total_microusd: 1_320_000,
+                ..
+            }
+        ));
+        assert!(matches!(
+            catalog.quote("opencode", "deepseek-v4-pro", usage(1_000_000)),
+            PriceQuote::Priced {
+                total_microusd: 1_740_000,
+                ..
+            }
+        ));
+        assert!(matches!(
+            catalog.quote("gateway", "deepseek-v4-pro", usage(1_000_000)),
+            PriceQuote::Priced {
+                total_microusd: 9_000_000,
+                ..
+            }
+        ));
+        assert!(matches!(
+            catalog.quote("opencode", "deepseek-v4.1-flash-free", usage(1_000_000)),
+            PriceQuote::Priced {
+                total_microusd: 0,
+                ..
+            }
+        ));
+        assert_eq!(
+            catalog.quote("deepseek", "deepseek-v4.1-flash-free", usage(1_000_000)),
+            PriceQuote::Unpriced
+        );
+        for (provider, id) in [
+            ("custom", "gemini-3.8-flash"),
+            ("google-vertex", "gemini-2.5-pro"),
+            ("zhipu", "glm-5.3"),
+            ("custom", "kimi-k3"),
+            ("dashscope", "qwen3.8-flash"),
+            ("custom", "minimax-m3"),
+            ("x-ai", "grok-4.7"),
+        ] {
+            assert!(
+                matches!(
+                    catalog.quote(provider, id, usage(100)),
+                    PriceQuote::Priced { .. }
+                ),
+                "{provider}/{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn deepseek_peak_windows_weekends_and_holidays_use_native_request_time() {
+        let catalog = PricingCatalog::new(builtin_model_prices());
+        for (time, peak) in [
+            ("2026-10-26T00:59:59Z", false),
+            ("2026-10-26T01:00:00Z", true),
+            ("2026-10-26T03:59:59Z", true),
+            ("2026-10-26T04:00:00Z", false),
+            ("2026-10-26T06:00:00Z", true),
+            ("2026-10-26T10:00:00Z", false),
+            ("2026-10-24T02:00:00Z", false),
+            ("2026-10-01T02:00:00Z", false),
+        ] {
+            assert!(
+                matches!(catalog.quote_at("deepseek-official","deepseek-v4-pro",usage(1_000_000),at(time)),PriceQuote::Priced{total_microusd,..} if total_microusd == if peak {1_320_000} else {660_000}),
+                "{time}"
+            );
+        }
+        assert_eq!(
+            catalog.quote_summary(
+                "deepseek-official",
+                "deepseek-v4-pro",
+                usage(2_000_000),
+                "deepseek-v4-pro@offpeak"
+            ),
+            PriceQuote::Priced {
+                pricing_id: "deepseek-v4-pro@offpeak".into(),
+                revision: BUILTIN_PRICING_REVISION,
+                total_microusd: 1_320_000
+            }
+        );
+    }
+
+    #[test]
+    fn context_brackets_and_announced_price_changes_are_preserved_in_summaries() {
+        let catalog = PricingCatalog::new(builtin_model_prices());
+        for (provider, id, threshold, lower, upper) in [
+            ("google", "gemini-2.5-pro", 200001, 1.25, 2.5),
+            ("minimax", "minimax-m3", 512001, 0.3, 0.6),
+            ("alibaba", "qwen3.7-plus", 256001, 0.4, 1.2),
+            ("anthropic", "claude-haiku-5-5", 100001, 0.1, 0.5),
+            ("xai", "grok-4.7", 200000, 2.0, 4.0),
+        ] {
+            assert!(
+                matches!(catalog.quote(provider,id,usage(threshold-1)),PriceQuote::Priced{pricing_id,..} if pricing_id==id)
+            );
+            let quote = catalog.quote(provider, id, usage(threshold));
+            assert!(
+                matches!(quote,PriceQuote::Priced{pricing_id,..} if pricing_id==format!("{id}@long"))
+            );
+            assert!(
+                matches!(catalog.quote_summary(provider,id,usage(1_000_000),id),PriceQuote::Priced{total_microusd,..} if total_microusd==(1_000_000.0*lower) as i64)
+            );
+            assert!(
+                matches!(catalog.quote_summary(provider,id,usage(1_000_000),&format!("{id}@long")),PriceQuote::Priced{total_microusd,..} if total_microusd==(1_000_000.0*upper) as i64)
+            );
+        }
+        assert!(matches!(
+            catalog.quote_at(
+                "google",
+                "gemini-4-argon",
+                usage(1_000_000),
+                at("2026-11-30T23:59:59Z")
+            ),
+            PriceQuote::Priced {
+                total_microusd: 2_000_000,
+                ..
+            }
+        ));
+        assert!(matches!(
+            catalog.quote_at(
+                "google",
+                "gemini-4-argon",
+                usage(1_000_000),
+                at("2026-12-01T00:00:00Z")
+            ),
+            PriceQuote::Priced {
+                total_microusd: 4_000_000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn official_catalog_has_unique_keys_and_traceable_sources() {
+        let prices = builtin_model_prices();
+        let keys: HashSet<_> = prices
+            .iter()
+            .map(|p| (&p.provider, &p.pricing_id))
+            .collect();
+        assert_eq!(keys.len(), prices.len());
+        for price in prices {
+            assert!(
+                official::price_source(&price.provider, &price.pricing_id).starts_with("https://")
+            );
+        }
     }
 }

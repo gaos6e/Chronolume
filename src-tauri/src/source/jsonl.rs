@@ -12,7 +12,7 @@ use super::{
 };
 use crate::activity::{ToolInvocation, classify};
 use crate::error::{AppError, AppResult};
-use crate::pricing::{canonical_model_provider, normalize_model_id};
+use crate::pricing::{canonical_model_name, canonical_model_provider, normalize_model_id};
 
 pub(super) fn stream_jsonl(
     change: &SourceChange,
@@ -256,6 +256,8 @@ fn parse_turn_context(
     let Some(model) = model else {
         return Vec::new();
     };
+    let canonical = canonical_model_name(model);
+    let model = canonical.as_str();
     let turn_id = payload
         .get("turn_id")
         .and_then(Value::as_str)
@@ -336,7 +338,7 @@ fn parse_token_count(
         && cursor.current_model_raw.as_deref() != Some(model)
     {
         let normalized = normalize_model_id(model);
-        cursor.current_model_raw = Some(model.to_string());
+        cursor.current_model_raw = Some(canonical_model_name(model));
         cursor.current_pricing_model_id = Some(normalized.exact);
     }
 
@@ -383,6 +385,10 @@ fn parse_token_count(
         .clone()
         .unwrap_or_else(|| normalize_model_id(&model_raw).exact);
     vec![ParsedRecord::Usage(UsageEvent {
+        cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
+        reported_cost_microusd: None,
+        native_event_id: None,
         byte_offset,
         event_ordinal: ordinal,
         occurred_at_ms,
@@ -555,6 +561,7 @@ fn set_current_model(
     event_ordinal: u64,
     cursor: &mut SourceCursor,
 ) -> ModelChanged {
+    let model_raw = canonical_model_name(&model_raw);
     let pricing_model_id = normalize_model_id(&model_raw).exact;
     cursor.current_model_raw = Some(model_raw.clone());
     cursor.current_pricing_model_id = Some(pricing_model_id.clone());

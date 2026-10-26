@@ -38,7 +38,7 @@ export function UsageHero({ hero, partial }: UsageHeroProps) {
         </div>
         <div className="hero-side-metrics">
           <div><MessageSquareText /><span>{t('会话')}</span><strong>{formatExact(hero.sessionCount)}</strong><em aria-hidden="true">&nbsp;</em></div>
-          <div><Activity /><span>{t('活跃时间')}</span><strong>{formatDuration(hero.activeMs)}</strong><em aria-hidden="true">&nbsp;</em></div>
+          <div><Activity /><span title={t('并行会话的活跃时间累加；缺少计时时不按墙钟外推。')}>{t('活跃时间')}</span><strong>{formatDuration(hero.activeMs)}</strong><em aria-hidden="true">&nbsp;</em></div>
           <div>
             <Coins />
             <span>{t('估算成本')}</span>
@@ -52,6 +52,7 @@ export function UsageHero({ hero, partial }: UsageHeroProps) {
         <MiniMetric icon={<Download />} label={t('新增输入')} value={formatTokens(hero.freshInputTokens)} tone="blue" />
         <MiniMetric icon={<Upload />} label={t('输出')} value={formatTokens(hero.outputTokens)} tone="green" />
         <MiniMetric icon={<Sparkles />} label={t('缓存读取')} value={formatTokens(hero.cachedInputTokens)} tone="violet" />
+        <MiniMetric icon={<DatabaseZap />} label={t('缓存写入')} value={formatTokens(hero.cacheWriteTokens ?? 0)} tone="teal" />
         <MiniMetric icon={<BrainCircuit />} label={t('推理')} value={formatTokens(hero.reasoningTokens)} tone="orange" />
         <div className="hit-rate-card">
           <div><span>{t('缓存命中率')}</span><strong>{hero.cacheHitRate == null ? 'N/A' : `${(hitRate * 100).toFixed(1)}%`}</strong></div>

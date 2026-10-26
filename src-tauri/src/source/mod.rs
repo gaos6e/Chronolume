@@ -1,5 +1,12 @@
+pub mod agents;
+#[cfg(test)]
+mod agents_tests;
+mod claude;
+mod dsh;
 mod jsonl;
 mod logs_db;
+mod normalized;
+mod opencode;
 mod state_db;
 pub(crate) mod user_wait;
 
@@ -41,6 +48,7 @@ impl SourceKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceStatus {
+    pub agent: String,
     pub kind: SourceKind,
     pub exists: bool,
     pub file_count: u64,
@@ -151,11 +159,16 @@ impl SourceChange {
 pub struct ChangePlan {
     pub changes: Vec<SourceChange>,
     pub total_bytes: u64,
+    pub source_errors: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedRecord {
     SessionMetadata(SessionMetadata),
+    SessionAttributes {
+        parent_session_id: Option<String>,
+        archived: bool,
+    },
     StateSessionMetadata(StateSessionMetadata),
     LogsAdvanced(LogsAdvanced),
     ModelChanged(ModelChanged),
@@ -204,6 +217,10 @@ pub struct ModelChanged {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageEvent {
+    pub cache_write_tokens: u64,
+    pub cache_write_1h_tokens: u64,
+    pub reported_cost_microusd: Option<i64>,
+    pub native_event_id: Option<String>,
     pub byte_offset: u64,
     pub event_ordinal: u64,
     pub occurred_at_ms: i64,
@@ -258,7 +275,7 @@ pub struct StreamOutcome {
     pub cancelled: bool,
 }
 
-pub trait CodexSource: Send + Sync {
+pub trait UsageSource: Send + Sync {
     fn detect(&self) -> AppResult<SourceCapabilities>;
     fn plan(&self, checkpoints: &[SourceCheckpoint]) -> AppResult<ChangePlan>;
     fn stream(
@@ -268,6 +285,8 @@ pub trait CodexSource: Send + Sync {
         cancel: &AtomicBool,
     ) -> AppResult<StreamOutcome>;
 }
+
+pub use UsageSource as CodexSource;
 
 #[derive(Debug, Clone)]
 pub struct FsCodexSource {
@@ -366,6 +385,7 @@ impl CodexSource for FsCodexSource {
                 .filter(|file| file.kind == kind)
                 .collect();
             SourceStatus {
+                agent: "codex".into(),
                 kind,
                 exists: match kind {
                     SourceKind::Session => self.root.join("sessions").is_dir(),
@@ -380,6 +400,7 @@ impl CodexSource for FsCodexSource {
             let path = self.root.join(name);
             let metadata = path.metadata().ok();
             SourceStatus {
+                agent: "codex".into(),
                 kind,
                 exists: metadata.is_some(),
                 file_count: u64::from(metadata.is_some()),
@@ -471,6 +492,7 @@ impl CodexSource for FsCodexSource {
         Ok(ChangePlan {
             changes,
             total_bytes,
+            source_errors: Vec::new(),
         })
     }
 

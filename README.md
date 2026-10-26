@@ -5,7 +5,7 @@
 <h1 align="center">Chronolume</h1>
 
 <p align="center">
-  <strong>让本地 Codex 数据，从一串日志变成你的工作节奏。</strong><br>
+  <strong>让 coding agent 的本地数据，照见你的工作节奏。</strong><br>
   <em>Illuminate the rhythm of your work.</em>
 </p>
 
@@ -24,7 +24,9 @@
   · <a href="#开发与构建">开发文档</a>
 </p>
 
-Chronolume 是为 **OpenAI Codex 用户**打造的本地洞察应用。只读扫描 `~/.codex`，将活动记录整理成 Token、会话、活跃时间、模型、工具与成本趋势。无需登录，默认离线；首次建立索引，之后增量同步。
+Chronolume 是为 **Codex、Claude Code、OpenCode 与 DeepSeek Harness 用户**打造的本地洞察应用。只读扫描各 agent 的本地记录，将活动整理成 Token、会话、活跃时间、模型、工具与成本趋势。无需登录，默认离线；首次建立索引，之后按来源增量同步。默认合并展示，可按 agent 筛选，同一工作区的投入统一汇总。
+
+支持 Claude Code 主会话与子 agent、OpenCode 旧 JSON 与多代 SQLite 存储、DeepSeek Harness JSONL/Zstandard 会话；可在数据页配置每个 agent 的数据目录。详细格式、计价与指标边界见 [agent 接入说明](docs/agents.md)。
 
 <p align="center">
   <picture>
@@ -36,7 +38,7 @@ Chronolume 是为 **OpenAI Codex 用户**打造的本地洞察应用。只读扫
   <sub>一眼看见用量、成本与工作节奏 · <a href="docs/images/chronolume-dashboard.png">浅色</a> / <a href="docs/images/chronolume-dashboard-dark.png">暗色</a>主题 · 截图使用演示数据</sub>
 </p>
 
-> 成本按 Token 用量与本地价格表估算，不等同于 OpenAI / ChatGPT 的官方账单、余额或在线配额。
+> 成本按 Token 用量与本地价格表估算；常用品牌采用对应官网参考价，渠道价格和用户覆盖优先。详见[官方价格与口径](docs/pricing.md)。估算不等同于提供方账单、余额或在线配额。
 
 ## 下载与开始
 
@@ -46,10 +48,10 @@ Chronolume 是为 **OpenAI Codex 用户**打造的本地洞察应用。只读扫
 | **macOS Universal** · [测试候选](https://github.com/gaos6e/Chronolume/releases/latest) | 带 `unsigned` 的 `.app.zip` / `.dmg` 仅供测试；正式分发等待签名、公证与真机验收 |
 
 1. **下载安装**：Windows 选择安装器或便携版；macOS 候选版请先阅读[测试与分发说明](docs/packaging-macos.md)。
-2. **打开应用**：自动扫描本机 `~/.codex`，在后台建立分析索引，可查看进度、取消或续传。
-3. **查看与导出**：选择时间范围、工作区、提供方、模型和会话状态，查看自己的使用图景，或导出 CSV、JSON 与趋势 PNG。
+2. **打开应用**：自动发现本机 Codex、Claude Code、OpenCode 与 DeepSeek Harness 数据，在后台建立分析索引，可查看进度、取消或续传。
+3. **查看与导出**：选择 agent、时间范围、工作区、提供方、模型和会话状态，查看自己的使用图景，或导出 CSV、JSON 与趋势 PNG。
 
-无需改变原有 Codex 工作方式。应用不会接管请求、读取账号凭据或查询在线配额。
+无需改变原有 agent 工作方式。应用不会接管请求、读取账号凭据或查询在线配额。
 
 ## 能做什么
 
@@ -63,7 +65,7 @@ Chronolume 是为 **OpenAI Codex 用户**打造的本地洞察应用。只读扫
 <details>
 <summary><strong>查看完整功能清单</strong></summary>
 
-- **时间与筛选**：今日、24 小时、7 / 14 / 30 / 90 天、全部历史，以及固定或实时自定义范围；支持工作区、提供方、模型和归档状态级联筛选。
+- **时间与筛选**：今日、24 小时、7 / 14 / 30 / 90 天、全部历史，以及固定或实时自定义范围；支持 agent、工作区、提供方、模型和归档状态级联筛选。
 - **总览与趋势**：Token 构成、缓存命中率、会话数、估算成本、活跃时间、峰值日、连续活跃天数、年度热力图和小时 / 日 / 周趋势。
 - **项目与会话**：工作区搜索、别名、忽略、上下文导航；会话级 Token、成本、活跃度、平均 TPS、平均首字延迟、归档状态、完整性和最近 90 天结构化事件。
 - **模型与价格**：模型分布、规范化计价 ID、未定价提示、本地价格增删改与恢复，以及用户主动触发的官方价格差异预览。
@@ -124,11 +126,11 @@ Chronolume 是为 **OpenAI Codex 用户**打造的本地洞察应用。只读扫
 
 ## 隐私与数据
 
-Chronolume 对 `~/.codex` **只读**，默认离线、无遥测、无后台上传，也不访问 `auth.json`。唯一可选的网络操作，是你主动发起的 OpenAI 官方价格检查；更新前会展示来源、时间与差异，由你确认应用。
+Chronolume 对所有 agent 的源数据 **只读**，默认离线、无遥测、无后台上传，也不访问账号凭据或 `auth.json`。唯一可选的网络操作，是你主动发起的 OpenAI 官方价格检查；更新前会展示来源、时间与差异，由你确认应用。
 
 - **原文不进入分析库**：不查询或保存提示词、助手回复、标题、预览、首条用户消息、代码或命令正文。工具参数只在内存中分类，随后丢弃。
 - **导出不含对话内容**：CSV、JSON 与 PNG 均不包含对话正文；结构化导出可选择匿名路径或完整路径。
-- **清空不会影响源记录**：只删除派生分析数据，不会修改 `~/.codex` 或用户导出文件。
+- **清空不会影响源记录**：只删除派生分析数据，不会修改任何 agent 的源记录或用户导出文件。
 
 完整边界见[隐私说明](docs/privacy.md)。
 
@@ -146,7 +148,7 @@ Windows 延续 2.0 的品牌数据迁移；macOS 不探测 Windows 历史应用�
 
 ## 开发与构建
 
-**Tauri 2 · Rust · React · TypeScript · Vite**。浏览器开发预览不读取本机 Codex 数据；真实数据与原生功能请使用 Tauri 开发窗口。
+**Tauri 2 · Rust · React · TypeScript · Vite**。浏览器开发预览不读取本机 agent 数据；真实数据与原生功能请使用 Tauri 开发窗口。
 
 <details>
 <summary><strong>环境要求、开发、验证与打包命令</strong></summary>
@@ -218,7 +220,7 @@ Windows 产物路径、哈希和 smoke test 见[Windows 打包说明](docs/packa
 
 | 面向使用者 | 面向开发者 |
 | :--- | :--- |
-| [隐私说明](docs/privacy.md) · [性能数据](docs/performance.md) | [系统架构](docs/architecture.md) · [数据模型](docs/data-model.md) |
+| [agent 接入](docs/agents.md) · [隐私说明](docs/privacy.md) · [性能数据](docs/performance.md) | [系统架构](docs/architecture.md) · [数据模型](docs/data-model.md) |
 | [Windows 打包](docs/packaging.md) · [macOS 候选](docs/packaging-macos.md) | [版本记录](CHANGELOG.md) · [截图维护](docs/readme-preview.md) |
 | [迁移与清理](docs/migration-and-cleanup.md) | [前端验收记录](docs/frontend-quality.md) |
 

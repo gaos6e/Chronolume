@@ -1,7 +1,7 @@
 [package]
 name = "chronolume"
-version = "2.1.11"
-description = "Private, offline-first insight into local Codex activity, usage, and cost"
+version = "2.2.0"
+description = "Private, offline-first insights into Codex, Claude Code, OpenCode, and DeepSeek Harness activity, usage, and cost"
 authors = ["gaos6e"]
 license = "MIT"
 edition = "2024"
@@ -58,6 +58,7 @@ tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2.7.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
+zstd = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

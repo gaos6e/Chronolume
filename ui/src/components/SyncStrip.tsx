@@ -59,7 +59,7 @@ export function SyncStrip({ status, onCancel, cancelling = false }: SyncStripPro
 function phaseLabel(phase: SyncStatus['phase']): string {
   const labels: Record<SyncStatus['phase'], string> = {
     idle: '等待本地同步',
-    detecting: '正在检测 Codex 数据源',
+    detecting: '正在检测本地 agent 数据源',
     planning: '正在生成增量计划',
     importing: '正在后台导入',
     rolling_up: '正在更新永久汇总',

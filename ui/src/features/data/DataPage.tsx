@@ -3,6 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Database, FileStack, RefreshCw, ShieldCheck, Trash2, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { clearAnalysis, getBootstrapStatus, getDiagnostics, getSyncStatus, isTauriRuntime, startSync } from '../../api';
+import { SourceConnections } from './SourceConnections';
+import { agentLabel } from '../../lib/agents';
+import { invalidateUsageData } from '../../lib/queries';
 import { QueryStatus } from '../../components/QueryStatus';
 import { ActionFeedback } from '../../components/ActionFeedback';
 import { Dialog } from '../../components/Dialog';
@@ -20,7 +23,7 @@ export function DataPage() {
     mutationFn: (mode: 'incremental' | 'rebuild' | 'repair') => startSync(mode),
     onSuccess: (status) => {
       queryClient.setQueryData(['sync-status'], status);
-      void queryClient.invalidateQueries({ queryKey: ['diagnostics'] });
+      invalidateUsageData(queryClient);
     },
   });
   const clear = useMutation({
@@ -33,16 +36,13 @@ export function DataPage() {
   const grouped = useMemo(() => {
     const values = new Map<string, { files: number; bytes: number; ready: number; errors: number }>();
     diagnostics.data?.sources.forEach((source) => {
-      const current = values.get(source.kind) ?? { files: 0, bytes: 0, ready: 0, errors: 0 };
+      const current = values.get(`${source.agent ?? 'codex'}:${source.kind}`) ?? { files: 0, bytes: 0, ready: 0, errors: 0 };
       current.files += 1; current.bytes += source.fileSize;
       if (source.status === 'ready') current.ready += 1;
       if (source.status === 'error') current.errors += 1;
-      values.set(source.kind, current);
+      values.set(`${source.agent ?? 'codex'}:${source.kind}`, current);
     });
-    return ['state_db', 'session', 'archived_session', 'logs_db'].map((kind) => [
-      kind,
-      values.get(kind) ?? { files: 0, bytes: 0, ready: 0, errors: 0 },
-    ] as const);
+    return [...values.entries()];
   }, [diagnostics.data?.sources]);
 
   const maintenanceDisabled = !isTauriRuntime() || syncing || sync.isLoading || sync.isError || refresh.isPending || clear.isPending;
@@ -53,6 +53,7 @@ export function DataPage() {
       error={diagnostics.error}
       onRetry={() => void diagnostics.refetch()}
     />
+    <SourceConnections syncing={syncing} onSaved={() => refresh.mutate('incremental')} />
     <div className="stat-card-grid diagnostics-grid" aria-busy={diagnostics.isLoading}>
       <div className="stat-card">{diagnostics.data == null || diagnostics.data.databaseIntegrityOk ? <ShieldCheck /> : <AlertTriangle />}<span>{t('数据库完整性')}</span><strong>{diagnostics.data == null ? '—' : diagnostics.data.databaseIntegrityOk ? t('正常') : t('异常')}</strong></div>
       <div className="stat-card"><Database /><span>{t('分析库大小')}</span><strong>{diagnostics.data ? formatBytes(diagnostics.data.databaseSizeBytes) : '—'}</strong></div>
@@ -61,7 +62,8 @@ export function DataPage() {
     </div>
     <section className="feature-card">
       <div className="feature-card-heading"><div><span>SOURCES</span><h2>{t('数据源能力与索引')}</h2></div><small>Schema v{diagnostics.data?.schemaVersion ?? '…'} · Parser v{diagnostics.data?.parserVersion ?? '…'}</small></div>
-      {diagnostics.data && <div className="source-grid">{grouped.map(([kind, source]) => <div key={kind}><strong>{sourceLabel(kind)}</strong><span>{source.files.toLocaleString()} {t('文件')} · {formatBytes(source.bytes)}</span><small>{source.files === 0 ? t('不可用或尚未检测') : `${source.ready}/${source.files} ${t('就绪')}${source.errors > 0 ? ` · ${source.errors} ${t('错误')}` : ''}`}</small></div>)}</div>}
+      {diagnostics.data && <div className="source-grid">{grouped.map(([kind, source]) => <div key={kind}><strong>{sourceLabel(kind)}</strong><span>{source.files.toLocaleString()} {kind.startsWith('opencode:') ? t('会话') : t('文件')} · {formatBytes(source.bytes)}</span><small>{source.files === 0 ? t('不可用或尚未检测') : `${source.ready}/${source.files} ${t('就绪')}${source.errors > 0 ? ` · ${source.errors} ${t('错误')}` : ''}`}</small></div>)}</div>}
+      {diagnostics.data && grouped.length === 0 && <p className="form-hint">{t('同步后显示各来源的索引状态。')}</p>}
     </section>
     <section className="feature-card">
       <div className="feature-card-heading"><div><span>MAINTENANCE</span><h2>{t('索引维护')}</h2></div></div>
@@ -77,7 +79,7 @@ export function DataPage() {
       <p className="privacy-note">
         <span>{t('这些操作只写入 Chronolume 分析目录：')}</span>
         <code>{bootstrap.data?.dataDirectory ?? '—'}</code>
-        <span>{t('；不会写入、移动或删除 ~/.codex。')}</span>
+        <span>{t('；不会写入、移动或删除任何 agent 的原始数据。')}</span>
       </p>
     </section>
     <section className="feature-card">
@@ -88,7 +90,7 @@ export function DataPage() {
     </section>
     {confirmingClear && <Dialog className="confirm-dialog" label={t('清空分析库')} busy={clear.isPending} onClose={() => setConfirmingClear(false)}>
       <h2>{t('清空分析库')}</h2>
-      <p>{t('仅清空 Chronolume v2 分析库。~/.codex 原始数据不会被修改。是否继续？')}</p>
+      <p>{t('仅清空 Chronolume 分析库。所有 agent 的原始数据、价格和设置均保留。是否继续？')}</p>
       <ActionFeedback pending={clear.isPending} error={clear.error} />
       <div className="dialog-actions"><button type="button" autoFocus data-autofocus className="quiet-button" disabled={clear.isPending} onClick={() => setConfirmingClear(false)}>{t('取消')}</button><button type="button" className="danger-button" disabled={clear.isPending || syncing} onClick={() => clear.mutate()}>{t('确认清空')}</button></div>
     </Dialog>}
@@ -96,5 +98,7 @@ export function DataPage() {
 }
 
 function sourceLabel(kind: string): string {
-  return ({ session: 'sessions', archived_session: 'archived_sessions', state_db: 'state_5.sqlite', logs_db: 'logs_2.sqlite' } as Record<string, string>)[kind] ?? kind;
+  const [agent, source] = kind.includes(':') ? kind.split(':') : ['codex', kind];
+  const label = ({ session: 'sessions', archived_session: 'archived_sessions', state_db: 'state_5.sqlite', logs_db: 'logs_2.sqlite' } as Record<string, string>)[source] ?? source;
+  return `${agentLabel(agent)} · ${label}`;
 }

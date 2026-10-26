@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use commands::RuntimeState;
 use export::UsageExporter;
-use indexer::{SyncMode, UsageIndexer, default_codex_root, system_timezone};
+use indexer::{SyncMode, UsageIndexer, system_timezone};
 use platform::resolve_analysis_database;
 use pricing::BUILTIN_PRICING_REVISION;
 use pricing_update::PriceUpdateService;
-use source::FsCodexSource;
+use source::agents::{MultiAgentSource, SourceSettings};
 use store::UsageStore;
 use tauri::{Emitter, Manager};
 
@@ -44,6 +44,9 @@ pub fn run() {
             let expected_pricing_marker = BUILTIN_PRICING_REVISION.to_string();
             if pricing_marker.as_deref() != Some(expected_pricing_marker.as_str()) {
                 store
+                    .refresh_official_pricing_sources()
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
+                store
                     .reprice_all(timezone)
                     .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
                 store
@@ -62,8 +65,13 @@ pub fn run() {
             } else {
                 SyncMode::Incremental
             };
-            let codex_root = default_codex_root()
-                .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
+            let source_settings = store
+                .app_setting("source-settings")
+                .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?
+                .map(|value| serde_json::from_str::<SourceSettings>(&value))
+                .transpose()?
+                .unwrap_or_default();
+            let sources = Arc::new(MultiAgentSource::new(source_settings));
             let idle_gap_ms = store
                 .app_setting("activity")
                 .ok()
@@ -80,7 +88,7 @@ pub fn run() {
                 * 1000;
             let indexer = Arc::new(UsageIndexer::new(
                 Arc::clone(&store),
-                Arc::new(FsCodexSource::new(codex_root)),
+                sources.clone(),
                 pricing,
                 timezone,
                 idle_gap_ms,
@@ -88,6 +96,7 @@ pub fn run() {
             let query = Arc::new(query::UsageQuery::new(Arc::clone(&store), timezone));
             let exporter = Arc::new(UsageExporter::new(Arc::clone(&query)));
             app.manage(RuntimeState {
+                sources,
                 store: Arc::clone(&store),
                 indexer: Arc::clone(&indexer),
                 query,
@@ -133,6 +142,8 @@ pub fn run() {
             commands::apply_price_update,
             commands::export_data,
             commands::write_chart_png,
+            commands::get_source_settings,
+            commands::save_source_settings,
             commands::get_app_preferences,
             commands::save_app_preferences
         ]);

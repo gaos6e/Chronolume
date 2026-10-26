@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn filters(preset: RangePreset) -> UsageFilters {
     UsageFilters {
+        agent: None,
         range: RangeSelection {
             preset,
             start_ms: None,

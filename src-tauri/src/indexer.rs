@@ -202,6 +202,14 @@ impl UsageIndexer {
         self.update_status(|status| {
             status.files_total = plan.changes.len() as u64;
             status.bytes_total = plan.total_bytes;
+            for (agent, code) in &plan.source_errors {
+                status.file_errors += 1;
+                status.records_skipped += 1;
+                *status
+                    .error_counts
+                    .entry(format!("{agent}:{code}"))
+                    .or_default() += 1;
+            }
         });
         self.store.begin_sync_run(
             &run_id,
@@ -243,6 +251,10 @@ impl UsageIndexer {
                         self.cancel.store(true, Ordering::Relaxed);
                         break;
                     }
+                }
+                Err(error) if error.code == "sync_cancelled" => {
+                    self.cancel.store(true, Ordering::Relaxed);
+                    break;
                 }
                 Err(error) => {
                     let _ = self

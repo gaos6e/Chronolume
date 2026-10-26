@@ -15,6 +15,9 @@ use crate::pricing::{
 use crate::pricing_update::TrustedPriceRow;
 
 fn builtin_display_name(pricing_id: &str) -> String {
+    if let Some((base, bracket)) = pricing_id.split_once('@') {
+        return format!("{} · {}", base, bracket);
+    }
     match pricing_id {
         "gpt-6.1-sol" => "GPT-6.1 Sol".to_string(),
         "gpt-6-astra" => "GPT-6 Astra".to_string(),
@@ -40,6 +43,7 @@ pub struct ModelPriceRecord {
     pub revision: i64,
     pub source_url: Option<String>,
     pub source_updated_at_ms: Option<i64>,
+    pub pricing_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,6 +68,7 @@ pub struct RepriceResult {
 
 #[derive(Debug)]
 struct DailyUsageForReprice {
+    pricing_model_id: String,
     session_id: String,
     local_date: String,
     timezone_id: String,
@@ -82,6 +87,9 @@ struct DailyUsageForReprice {
     total_tokens: i64,
     event_count: i64,
     last_activity_at_ms: i64,
+    cache_write_tokens: i64,
+    cache_write_1h_tokens: i64,
+    reported_cost_microusd: Option<i64>,
 }
 
 impl UsageStore {
@@ -191,8 +199,8 @@ impl UsageStore {
                         price.cache_read_per_million_usd.to_string(),
                         cache_write,
                         BUILTIN_PRICING_REVISION,
-                        OFFICIAL_PRICING_SOURCE,
-                        official_snapshot_ms(),
+                        crate::pricing::official::price_source(&price.provider, &price.pricing_id),
+                        if price.provider != "openai" { chrono::DateTime::parse_from_rfc3339("2026-10-26T00:00:00Z").expect("snapshot date").timestamp_millis() } else { official_snapshot_ms() },
                         Utc::now().timestamp_millis(),
                     ],
                 )?;
@@ -223,6 +231,10 @@ impl UsageStore {
             let mut statement = connection.prepare(sql)?;
             let rows = statement.query_map([], |row| {
                 Ok(ModelPriceRecord {
+                    pricing_note: crate::pricing::official::description(
+                        &row.get::<_, String>(0)?,
+                        &row.get::<_, String>(1)?,
+                    ),
                     provider: row.get(0)?,
                     pricing_id: row.get(1)?,
                     display_name: row.get(2)?,
@@ -244,6 +256,11 @@ impl UsageStore {
 
     pub fn pricing_catalog(&self) -> AppResult<PricingCatalog> {
         let records = self.model_prices(false)?;
+        let overrides = records
+            .iter()
+            .filter(|r| r.is_overridden || !r.is_builtin)
+            .map(|r| (r.provider.clone(), r.pricing_id.clone()))
+            .collect();
         let prices = records
             .into_iter()
             .map(|record| {
@@ -262,16 +279,28 @@ impl UsageStore {
                 })
             })
             .collect::<AppResult<Vec<_>>>()?;
-        Ok(PricingCatalog::new(prices))
+        Ok(PricingCatalog::new(prices).with_overrides(overrides))
+    }
+
+    /// Non-Codex sources were previously unpriced or kept only a flat reference
+    /// rate. Replay their accessible snapshots once to retain request brackets.
+    pub fn refresh_official_pricing_sources(&self) -> AppResult<()> {
+        self.with_writer(|transaction| {
+            transaction.execute("UPDATE source_files SET parser_version = 0 WHERE agent IN ('claude','opencode','dsh')", [])?;
+            Ok(())
+        })
     }
 
     pub fn save_model_price(&self, input: &ModelPriceInput) -> AppResult<()> {
         validate_price_input(input)?;
-        let provider = match canonical_model_provider(&input.provider).as_str() {
-            "openai" => "openai".to_string(),
-            _ => "custom".to_string(),
+        let raw_provider = input.provider.trim().to_ascii_lowercase();
+        let provider = if raw_provider == "codex_local_access" {
+            canonical_model_provider(&raw_provider)
+        } else {
+            raw_provider
         };
-        let pricing_id = input.pricing_id.trim().to_ascii_lowercase();
+        let pricing_id =
+            crate::pricing::canonical_model_name(&input.pricing_id.trim().to_ascii_lowercase());
         let now = Utc::now().timestamp_millis();
         self.with_writer(|transaction| {
             let existing_builtin: Option<i64> = transaction
@@ -294,7 +323,7 @@ impl UsageStore {
                     params![
                         provider,
                         pricing_id,
-                        input.display_name.trim(),
+                        crate::pricing::canonical_model_name(input.display_name.trim()),
                         canonical_price(&input.input_per_million_usd)?,
                         canonical_price(&input.output_per_million_usd)?,
                         canonical_price(&input.cache_read_per_million_usd)?,
@@ -322,7 +351,7 @@ impl UsageStore {
                     params![
                         pricing_id,
                         provider,
-                        input.display_name.trim(),
+                        crate::pricing::canonical_model_name(input.display_name.trim()),
                         input_price,
                         output_price,
                         cache_read,
@@ -342,7 +371,7 @@ impl UsageStore {
                     "SELECT is_builtin FROM model_prices WHERE provider = ?1 AND pricing_id = ?2",
                     params![
                         provider.to_ascii_lowercase(),
-                        pricing_id.to_ascii_lowercase()
+                        crate::pricing::canonical_model_name(&pricing_id.to_ascii_lowercase())
                     ],
                     |row| row.get(0),
                 )
@@ -353,7 +382,7 @@ impl UsageStore {
                      WHERE provider = ?1 AND pricing_id = ?2",
                     params![
                         provider.to_ascii_lowercase(),
-                        pricing_id.to_ascii_lowercase(),
+                        crate::pricing::canonical_model_name(&pricing_id.to_ascii_lowercase()),
                         Utc::now().timestamp_millis()
                     ],
                 )?;
@@ -362,7 +391,7 @@ impl UsageStore {
                     "DELETE FROM model_prices WHERE provider = ?1 AND pricing_id = ?2",
                     params![
                         provider.to_ascii_lowercase(),
-                        pricing_id.to_ascii_lowercase()
+                        crate::pricing::canonical_model_name(&pricing_id.to_ascii_lowercase())
                     ],
                 )?;
             }
@@ -383,7 +412,7 @@ impl UsageStore {
                  WHERE provider = ?1 AND pricing_id = ?2 AND is_builtin = 1",
                 params![
                     provider.to_ascii_lowercase(),
-                    pricing_id.to_ascii_lowercase(),
+                    crate::pricing::canonical_model_name(&pricing_id.to_ascii_lowercase()),
                     Utc::now().timestamp_millis()
                 ],
             )?;
@@ -400,7 +429,7 @@ impl UsageStore {
             let events = {
                 let mut statement = transaction.prepare(
                     "SELECT id, model_provider, model_raw, fresh_input_tokens,
-                            cached_input_tokens, output_tokens FROM usage_events",
+                            cached_input_tokens, output_tokens, cache_write_tokens, cache_write_1h_tokens, occurred_at_ms FROM usage_events",
                 )?;
                 statement
                     .query_map([], |row| {
@@ -411,20 +440,23 @@ impl UsageStore {
                             row.get::<_, i64>(3)?,
                             row.get::<_, i64>(4)?,
                             row.get::<_, i64>(5)?,
+                            row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?,
                         ))
                     })?
                     .collect::<Result<Vec<_>, _>>()?
             };
             for event in &events {
-                let quote = catalog.quote(
+                let quote = catalog.quote_at(
                     &event.1,
                     &event.2,
                     PriceableTokens {
+                        cache_write_1h: nonnegative(event.7),
                         fresh_input: nonnegative(event.3),
                         cached_input: nonnegative(event.4),
                         output: nonnegative(event.5),
-                        cache_write: 0,
+                        cache_write: nonnegative(event.6),
                     },
+                    event.8,
                 );
                 let (pricing_id, revision, cost, _) = quote_parts(quote);
                 transaction.execute(
@@ -438,7 +470,7 @@ impl UsageStore {
             let segments = {
                 let mut statement = transaction.prepare(
                     "SELECT id, model_provider, model_raw, input_tokens,
-                            cached_input_tokens, output_tokens
+                            cached_input_tokens, output_tokens, cache_write_tokens, cache_write_1h_tokens, COALESCE(pricing_model_id, '')
                      FROM session_model_segments",
                 )?;
                 statement
@@ -450,20 +482,23 @@ impl UsageStore {
                             row.get::<_, i64>(3)?,
                             row.get::<_, i64>(4)?,
                             row.get::<_, i64>(5)?,
+                            row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, String>(8)?,
                         ))
                     })?
                     .collect::<Result<Vec<_>, _>>()?
             };
             for segment in &segments {
-                let quote = catalog.quote(
+                let quote = catalog.quote_summary(
                     &segment.1,
                     &segment.2,
                     PriceableTokens {
-                        fresh_input: nonnegative(segment.3.saturating_sub(segment.4)),
+                        cache_write_1h: nonnegative(segment.7),
+                        fresh_input: nonnegative(segment.3.saturating_sub(segment.4).saturating_sub(segment.6)),
                         cached_input: nonnegative(segment.4),
                         output: nonnegative(segment.5),
-                        cache_write: 0,
+                        cache_write: nonnegative(segment.6),
                     },
+                    &segment.8,
                 );
                 let (pricing_id, _, cost, excluded) = quote_parts(quote);
                 transaction.execute(
@@ -483,7 +518,7 @@ impl UsageStore {
                             input_tokens, fresh_input_tokens, cached_input_tokens,
                             output_tokens, reasoning_tokens, total_tokens,
                             priced_event_count + unpriced_event_count,
-                            last_activity_at_ms
+                            last_activity_at_ms, cache_write_tokens, cache_write_1h_tokens, reported_cost_microusd, pricing_model_id
                      FROM session_daily_usage",
                 )?;
                 statement
@@ -507,6 +542,8 @@ impl UsageStore {
                             total_tokens: row.get(15)?,
                             event_count: row.get(16)?,
                             last_activity_at_ms: row.get(17)?,
+                            cache_write_tokens: row.get(18)?, cache_write_1h_tokens: row.get(19)?, reported_cost_microusd: row.get(20)?,
+                            pricing_model_id: row.get(21)?,
                         })
                     })?
                     .collect::<Result<Vec<_>, _>>()?
@@ -515,15 +552,17 @@ impl UsageStore {
             // “未定价”行与既有已定价行在主键更新时发生冲突。
             transaction.execute("DELETE FROM session_daily_usage", [])?;
             for row in &daily {
-                let quote = catalog.quote(
+                let quote = catalog.quote_summary(
                     &row.model_provider,
                     &row.model_raw,
                     PriceableTokens {
+                        cache_write_1h: nonnegative(row.cache_write_1h_tokens),
                         fresh_input: nonnegative(row.fresh_input_tokens),
                         cached_input: nonnegative(row.cached_input_tokens),
                         output: nonnegative(row.output_tokens),
-                        cache_write: 0,
+                        cache_write: nonnegative(row.cache_write_tokens),
                     },
+                    &row.pricing_model_id,
                 );
                 let (next_pricing_id, _, cost, excluded) = quote_parts(quote);
                 let priced_count = if cost.is_some() { row.event_count } else { 0 };
@@ -538,9 +577,9 @@ impl UsageStore {
                         workspace_id, model_provider, model_raw, pricing_model_id, archived,
                         active_ms, input_tokens, fresh_input_tokens, cached_input_tokens,
                         output_tokens, reasoning_tokens, total_tokens, priced_cost_microusd,
-                        priced_event_count, unpriced_event_count, last_activity_at_ms
+                        priced_event_count, unpriced_event_count, last_activity_at_ms, cache_write_tokens, cache_write_1h_tokens, reported_cost_microusd
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                               ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                               ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
                      ON CONFLICT(session_id, local_date, timezone_id, model_provider,
                                  model_raw, pricing_model_id, archived)
                      DO UPDATE SET
@@ -550,6 +589,9 @@ impl UsageStore {
                         input_tokens = input_tokens + excluded.input_tokens,
                         fresh_input_tokens = fresh_input_tokens + excluded.fresh_input_tokens,
                         cached_input_tokens = cached_input_tokens + excluded.cached_input_tokens,
+                        cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                        cache_write_1h_tokens = cache_write_1h_tokens + excluded.cache_write_1h_tokens,
+                        reported_cost_microusd = CASE WHEN reported_cost_microusd IS NULL AND excluded.reported_cost_microusd IS NULL THEN NULL ELSE COALESCE(reported_cost_microusd, 0) + COALESCE(excluded.reported_cost_microusd, 0) END,
                         output_tokens = output_tokens + excluded.output_tokens,
                         reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
                         total_tokens = total_tokens + excluded.total_tokens,
@@ -579,6 +621,7 @@ impl UsageStore {
                         priced_count,
                         unpriced_count,
                         row.last_activity_at_ms,
+                        row.cache_write_tokens, row.cache_write_1h_tokens, row.reported_cost_microusd,
                     ],
                 )?;
             }

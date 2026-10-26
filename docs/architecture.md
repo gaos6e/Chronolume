@@ -1,13 +1,13 @@
 # Chronolume 2.1 架构
 
-2.0 使用 Tauri 2、Rust、React、TypeScript 和 Vite，面向 OpenAI Codex 本地数据，离线优先且不实现代理、账号或在线配额。
+2.0 使用 Tauri 2、Rust、React、TypeScript 和 Vite，面向 Codex、Claude Code、OpenCode 与 DeepSeek Harness 本地数据，离线优先且不实现代理、账号或在线配额。
 
-核心架构决策见 [ADR 0001](adr/0001-tauri-v2-offline-usage-architecture.md)。实现遵循“深 Module、小 Interface、调用方与测试共用同一 Seam”：
+核心架构决策见 [ADR 0001](adr/0001-tauri-v2-offline-usage-architecture.md) 与 [多 agent ADR 0002](adr/0002-multi-agent-local-sources.md)。实现遵循“深 Module、小 Interface、调用方与测试共用同一 Seam”：
 
 ```text
-~/.codex (只读)
+Codex / Claude Code / OpenCode / DeepSeek Harness (只读)
        │
-  CodexSource
+  MultiAgentSource · UsageSource
        │ stream(change)
   UsageIndexer ── Activity / Pricing
        │ transaction

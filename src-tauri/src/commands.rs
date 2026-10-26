@@ -17,6 +17,7 @@ use crate::store::{
 };
 
 pub struct RuntimeState {
+    pub sources: Arc<crate::source::agents::MultiAgentSource>,
     pub store: Arc<UsageStore>,
     pub indexer: Arc<UsageIndexer>,
     pub query: Arc<UsageQuery>,
@@ -319,4 +320,36 @@ pub fn save_app_preferences(
         .indexer
         .set_idle_gap_ms(preferences.idle_gap_minutes * 60 * 1000);
     Ok(preferences)
+}
+
+#[tauri::command]
+pub fn get_source_settings(
+    state: State<'_, RuntimeState>,
+) -> AppResult<Vec<crate::source::agents::AgentSourceSetting>> {
+    state.sources.settings().describe()
+}
+
+#[tauri::command]
+pub fn save_source_settings(
+    mut settings: crate::source::agents::SourceSettings,
+    state: State<'_, RuntimeState>,
+) -> AppResult<Vec<crate::source::agents::AgentSourceSetting>> {
+    if matches!(
+        state.indexer.status().phase,
+        crate::indexer::SyncPhase::Detecting
+            | crate::indexer::SyncPhase::Planning
+            | crate::indexer::SyncPhase::Importing
+            | crate::indexer::SyncPhase::RollingUp
+    ) {
+        return Err(AppError::new("sync_in_progress", "请先等待当前同步完成"));
+    }
+    settings.validate()?;
+    let serialized = serde_json::to_string(&settings)
+        .map_err(|_| AppError::new("setting_serialization_failed", "设置序列化失败"))?;
+    let description = settings.describe()?;
+    state
+        .store
+        .save_app_setting("source-settings", &serialized)?;
+    state.sources.configure(settings);
+    Ok(description)
 }

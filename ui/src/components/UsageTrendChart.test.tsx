@@ -38,7 +38,7 @@ describe('UsageTrendChart data mapping', () => {
 
   it('restores valid persisted legend keys and ignores unknown keys', () => {
     expect([...deserializeSeriesVisibility('["outputTokens","unknown"]')]).toEqual(['outputTokens']);
-    expect(deserializeSeriesVisibility('not-json').size).toBe(5);
+    expect(deserializeSeriesVisibility('not-json').size).toBe(6);
   });
 
   it('never lets the legend hide its final visible series', () => {

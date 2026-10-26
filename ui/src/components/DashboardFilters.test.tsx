@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import '../i18n';
 import { cascadeFilter, DashboardFilters } from './DashboardFilters';
 import type { UsageFilters } from '../types';
 
@@ -12,6 +13,18 @@ const filters: UsageFilters = {
 };
 
 describe('cascadeFilter', () => {
+  it('selects DeepSeek Harness while retaining the workspace and clearing model filters', () => {
+    const onChange = vi.fn();
+    render(<DashboardFilters filters={filters} refreshing={false} onChange={onChange} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'DeepSeek Harness' }));
+    expect(onChange).toHaveBeenCalledWith({ ...filters, agent: 'dsh', modelProvider: undefined, model: undefined });
+  });
+  it('changes agents while keeping the workspace and resetting provider and model', () => {
+    const onChange = vi.fn();
+    render(<DashboardFilters filters={filters} refreshing={false} onChange={onChange} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Claude Code' }));
+    expect(onChange).toHaveBeenCalledWith({ ...filters, agent: 'claude', modelProvider: undefined, model: undefined });
+  });
   it('clears provider and model when the workspace changes', () => {
     expect(cascadeFilter(filters, 'workspaceId', 'workspace-b')).toMatchObject({
       workspaceId: 'workspace-b',

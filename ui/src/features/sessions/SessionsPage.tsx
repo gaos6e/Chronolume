@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { Archive, ChevronRight, Clock3 } from 'lucide-react';
+import { Archive, ChevronRight, Clock3, GitBranch } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getSessionDetail, getSessions, getUsageEvents } from '../../api';
+import { AgentBadge } from '../../components/AgentBadge';
 import { PageControls } from '../../components/PageControls';
 import { QueryStatus } from '../../components/QueryStatus';
 import { Dialog } from '../../components/Dialog';
@@ -61,12 +62,12 @@ export function SessionsPage({ filters }: { filters: UsageFilters }) {
           <thead><tr><th>{t('会话')}</th><th>{t('时间')}</th><th>{t('模型')}</th><th>Token</th><th>{t('成本')}</th><th>{t('活跃')}</th><th title={tpsDescription}>{t('TPS')}</th><th title={latencyDescription}>{t('平均首字延迟')}</th><th>{t('完整性')}</th><th><span className="sr-only">{t('操作')}</span></th></tr></thead>
           <tbody>{sessions.data?.items.map((session) => (
             <tr key={session.id}>
-              <td><strong>{session.title}</strong><small>{session.workspaceLabel}{session.archived && <><Archive />{t('归档')}</>}</small></td>
+              <td><div className="session-identity"><AgentBadge agent={session.agent} /><strong>{session.title}</strong></div><small>{session.workspaceLabel}{session.parentSessionId && <span className="subagent-label" title={t('子会话的用量独立计入统计。')}><GitBranch />{t('子会话')}</span>}{session.archived && <><Archive />{t('归档')}</>}</small></td>
               <td><strong>{session.startedAtMs ? new Date(session.startedAtMs).toLocaleString() : '—'}</strong><small>{t('结束')} · {session.endedAtMs ? new Date(session.endedAtMs).toLocaleString() : '—'}</small></td>
               <td><span className="model-pill">{session.latestModel}</span><small>{session.modelProvider}</small></td>
-              <td title={session.totalTokens.toLocaleString()}><strong>{formatTokens(session.totalTokens)}</strong><small>{t('输入')} {formatTokens(session.freshInputTokens)} · {t('缓存')} {formatTokens(session.cachedInputTokens)} · {t('输出')} {formatTokens(session.outputTokens)} · {t('推理')} {formatTokens(session.reasoningTokens)}</small></td>
-              <td>{formatCost(session.estimatedCostMicrousd)}{session.unpricedEventCount > 0 && <small className="warning-copy">{t('部分未定价')}</small>}</td>
-              <td><strong>{formatDuration(session.activeMs)}</strong><small title={session.activeMethod}>{session.activeIsEstimate ? t('估算') : t('生命周期')}</small></td>
+              <td title={session.totalTokens.toLocaleString()}><strong>{formatTokens(session.totalTokens)}</strong><small>{t('输入')} {formatTokens(session.freshInputTokens)} · {t('缓存')} {formatTokens(session.cachedInputTokens)} · {(session.cacheWriteTokens ?? 0) > 0 && <>{t('缓存写入')} {formatTokens(session.cacheWriteTokens ?? 0)} · </>}{t('输出')} {formatTokens(session.outputTokens)} · {t('推理')} {formatTokens(session.reasoningTokens)}</small></td>
+              <td>{formatCost(session.estimatedCostMicrousd)}{session.reportedCostMicrousd != null && <small title={t('日志报告成本来自 agent，不等同于官方账单；与估算成本分开显示。')}>{t('日志报告')} {formatCost(session.reportedCostMicrousd)}</small>}{session.unpricedEventCount > 0 && <small className="warning-copy">{t('部分未定价')}</small>}</td>
+              <td><strong>{session.activeMethod === 'unknown' ? '—' : formatDuration(session.activeMs)}</strong><small title={session.activeMethod}>{session.activeMethod === 'unknown' ? t('缺少计时') : session.activeIsEstimate ? t('估算') : t('生命周期')}</small></td>
               <td className="tps-value" title={tpsDescription}><strong>{formatTps(session.tokensPerSecond)}</strong>{session.tokensPerSecond != null && session.activeIsEstimate && <small>{t('估算')}</small>}</td>
               <td className="tps-value" title={latencyTitle(session.firstTokenLatencySampleCount)}>{formatLatency(session.averageFirstTokenLatencyMs)}</td>
               <td><span className={`integrity ${session.integrityStatus}`}>{t(session.integrityStatus)}</span></td>
@@ -83,6 +84,7 @@ export function SessionsPage({ filters }: { filters: UsageFilters }) {
           {detail.isLoading && <div className="inline-loading">{t('正在读取结构化统计…')}</div>}
           <QueryStatus loading={false} error={detail.error} onRetry={() => void detail.refetch()} />
           {detail.data && <>
+            <div className="detail-source-heading"><AgentBadge agent={detail.data.session.agent} />{detail.data.session.parentSessionId && <button type="button" className="quiet-button" onClick={() => { setEventPage(0); setEventDataOpen(false); setSelectedId(detail.data.session.parentSessionId); }}><GitBranch />{t('查看主会话')}</button>}</div>
             <h2>{detail.data.session.title}</h2>
             <p>{t('仅显示结构化统计；不读取或显示对话正文。')}</p>
             <div className="detail-metrics">
@@ -93,6 +95,8 @@ export function SessionsPage({ filters }: { filters: UsageFilters }) {
               <div><span>{t('工具类别')}</span><strong>{detail.data.tools.length}</strong></div>
               <div><span>{t('保留事件')}</span><strong>{detail.data.retainedEventCount}</strong></div>
             </div>
+            <div className="session-accounting-note"><span>{t('缓存写入')} <strong>{formatTokens(detail.data.session.cacheWriteTokens ?? 0)}</strong></span>{detail.data.session.reportedCostMicrousd != null && <span title={t('日志报告成本来自 agent，不等同于官方账单；与估算成本分开显示。')}>{t('日志报告成本')} <strong>{formatCost(detail.data.session.reportedCostMicrousd)}</strong></span>}</div>
+            <p className="form-hint">{t('首字延迟仅使用原生计时；缺失时显示 —。并行会话的活跃时间累加。')}</p>
             <h3>{t('解析与完整性')}</h3>
             <div className="compact-list">
               <div><span>{t('解析来源')}</span><strong>{detail.data.parsing.sourceKind} · {detail.data.parsing.sourceStatus}</strong></div>

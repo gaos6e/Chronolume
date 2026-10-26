@@ -8,7 +8,8 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use super::UsageStore;
 use crate::error::{AppError, AppResult};
 use crate::pricing::{
-    PriceQuote, PriceableTokens, PricingCatalog, is_statistics_excluded_model, normalize_model_id,
+    PriceQuote, PriceableTokens, PricingCatalog, canonical_model_name,
+    is_statistics_excluded_model, normalize_model_id,
 };
 use crate::source::user_wait::{TimeInterval, UserWaitTiming, merge_intervals, subtract_intervals};
 use crate::source::{
@@ -174,7 +175,7 @@ impl UsageStore {
                     .or_else(|| change.session_id.clone()),
             )
             .map_err(|error| ingest_stage("load_context", error))?;
-            let outcome = source
+            let mut outcome = source
                 .stream(
                     change,
                     &mut |record| {
@@ -183,6 +184,19 @@ impl UsageStore {
                     cancel,
                 )
                 .map_err(|error| ingest_stage("stream", error))?;
+            outcome.cursor.current_model_raw = outcome
+                .cursor
+                .current_model_raw
+                .map(|name| canonical_model_name(&name));
+            outcome.cursor.current_pricing_model_id = outcome
+                .cursor
+                .current_pricing_model_id
+                .map(|name| canonical_model_name(&name));
+            outcome.cursor.first_token_context.model_raw = outcome
+                .cursor
+                .first_token_context
+                .model_raw
+                .map(|name| canonical_model_name(&name));
 
             let session_id = if let Some(candidate) = context.session_id.clone() {
                 let exists = transaction
@@ -260,17 +274,19 @@ impl UsageStore {
                     workspace_id, model_provider, model_raw, pricing_model_id, archived,
                     session_count, active_ms, input_tokens, fresh_input_tokens,
                     cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
-                    priced_cost_microusd, unpriced_event_count, last_activity_at_ms
+                    priced_cost_microusd, unpriced_event_count, last_activity_at_ms,
+                    agent, cache_write_tokens, cache_write_1h_tokens, reported_cost_microusd
                  )
                  SELECT local_date, timezone_id, MIN(day_start_utc_ms), MAX(day_end_utc_ms),
                         workspace_id, model_provider, model_raw, pricing_model_id, archived,
                         COUNT(DISTINCT session_id), SUM(active_ms), SUM(input_tokens),
                         SUM(fresh_input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
                         SUM(reasoning_tokens), SUM(total_tokens), SUM(priced_cost_microusd),
-                        SUM(unpriced_event_count), MAX(last_activity_at_ms)
+                        SUM(unpriced_event_count), MAX(last_activity_at_ms), agent,
+                        SUM(cache_write_tokens), SUM(cache_write_1h_tokens), SUM(reported_cost_microusd)
                  FROM session_daily_usage
                  GROUP BY local_date, timezone_id, workspace_id, model_provider,
-                          model_raw, pricing_model_id, archived",
+                          model_raw, pricing_model_id, archived, agent",
                 [],
             )?;
 
@@ -279,14 +295,14 @@ impl UsageStore {
                 "INSERT INTO daily_tool_rollups (
                     local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
                     workspace_id, archived, tool_name, category, operation_kind,
-                    call_count, session_count
+                    call_count, session_count, agent
                  )
                  SELECT local_date, timezone_id, MIN(day_start_utc_ms), MAX(day_end_utc_ms),
                         workspace_id, archived, tool_name, category, operation_kind,
-                        SUM(call_count), COUNT(DISTINCT session_id)
+                        SUM(call_count), COUNT(DISTINCT session_id), agent
                  FROM session_daily_tool
                  GROUP BY local_date, timezone_id, workspace_id, archived,
-                          tool_name, category, operation_kind",
+                          tool_name, category, operation_kind, agent",
                 [],
             )?;
 
@@ -605,6 +621,7 @@ fn write_record(
 ) -> AppResult<()> {
     let record_kind = match &record {
         ParsedRecord::SessionMetadata(_) => "session_metadata",
+        ParsedRecord::SessionAttributes { .. } => "session_attributes",
         ParsedRecord::StateSessionMetadata(_) => "state_session_metadata",
         ParsedRecord::LogsAdvanced(_) => "logs_advanced",
         ParsedRecord::ModelChanged(_) => "model_changed",
@@ -614,22 +631,42 @@ fn write_record(
         ParsedRecord::Tool(_) => "tool",
     };
     let result = match record {
-        ParsedRecord::SessionMetadata(metadata) => {
+        ParsedRecord::SessionMetadata(mut metadata) => {
+            metadata.legacy_model = metadata
+                .legacy_model
+                .map(|name| canonical_model_name(&name));
             apply_session_metadata(transaction, context, metadata)
         }
-        ParsedRecord::StateSessionMetadata(metadata) => {
+        ParsedRecord::SessionAttributes {
+            parent_session_id,
+            archived,
+        } => {
+            context.archived = archived;
+            transaction.execute(
+                "UPDATE sessions SET parent_session_id=?2, archived=?3 WHERE id=?1",
+                params![context.session_id, parent_session_id, i64::from(archived)],
+            )?;
+            Ok(())
+        }
+        ParsedRecord::StateSessionMetadata(mut metadata) => {
+            metadata.model_raw = metadata.model_raw.map(|name| canonical_model_name(&name));
             apply_state_session_metadata(transaction, metadata)
         }
         ParsedRecord::LogsAdvanced(_) => Ok(()),
-        ParsedRecord::ModelChanged(model) => {
+        ParsedRecord::ModelChanged(mut model) => {
+            model.model_raw = canonical_model_name(&model.model_raw);
+            model.pricing_model_id = canonical_model_name(&model.pricing_model_id);
             ensure_session(transaction, change, context, model.occurred_at_ms)?;
             apply_model_change(transaction, context, model)
         }
-        ParsedRecord::Usage(event) => {
+        ParsedRecord::Usage(mut event) => {
+            event.model_raw = canonical_model_name(&event.model_raw);
+            event.pricing_model_id = canonical_model_name(&event.pricing_model_id);
             ensure_session(transaction, change, context, Some(event.occurred_at_ms))?;
             apply_usage_event(transaction, change, context, event, pricing, timezone)
         }
-        ParsedRecord::FirstTokenLatency(event) => {
+        ParsedRecord::FirstTokenLatency(mut event) => {
+            event.model_raw = canonical_model_name(&event.model_raw);
             ensure_session(transaction, change, context, Some(event.occurred_at_ms))?;
             apply_first_token_latency(transaction, context, event, timezone)
         }
@@ -927,15 +964,17 @@ fn apply_usage_event(
     }
     let session_id = context.session_id.as_deref().unwrap_or("unknown");
     let day = day_context(event.occurred_at_ms, timezone)?;
-    let quote = pricing.quote(
+    let quote = pricing.quote_at(
         &event.model_provider,
         &event.model_raw,
         PriceableTokens {
+            cache_write_1h: event.cache_write_1h_tokens,
             fresh_input: event.fresh_input_tokens,
             cached_input: event.cached_input_tokens,
             output: event.output_tokens,
-            cache_write: 0,
+            cache_write: event.cache_write_tokens,
         },
+        event.occurred_at_ms,
     );
     let (cost, revision, pricing_id, _cost_excluded) = match quote {
         PriceQuote::Priced {
@@ -946,17 +985,22 @@ fn apply_usage_event(
         PriceQuote::Excluded => (None, None, event.pricing_model_id.clone(), true),
         PriceQuote::Unpriced => (None, None, event.pricing_model_id.clone(), false),
     };
-    let event_key = format!("{}:usage:{}", change.source_key, event.event_ordinal);
+    let event_key = event
+        .native_event_id
+        .as_ref()
+        .map(|id| blake3::hash(id.as_bytes()).to_hex().to_string())
+        .unwrap_or_else(|| format!("{}:usage:{}", change.source_key, event.event_ordinal));
     let inserted = transaction.execute(
         "INSERT OR IGNORE INTO usage_events (
             event_key, source_file_id, session_id, byte_offset, event_ordinal,
             occurred_at_ms, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
             model_provider, model_raw, pricing_model_id, input_tokens,
             fresh_input_tokens, cached_input_tokens, output_tokens, reasoning_tokens,
-            total_tokens, estimated_cost_microusd, pricing_revision, integrity_status
+            total_tokens, estimated_cost_microusd, pricing_revision, integrity_status,
+            cache_write_tokens, cache_write_1h_tokens, reported_cost_microusd
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-            NULLIF(?13, ''), ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, 'complete'
+            NULLIF(?13, ''), ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, 'complete', ?22, ?23, ?24
          )",
         params![
             event_key,
@@ -980,6 +1024,9 @@ fn apply_usage_event(
             to_i64(event.total_tokens),
             cost,
             revision,
+            to_i64(event.cache_write_tokens),
+            to_i64(event.cache_write_1h_tokens),
+            event.reported_cost_microusd,
         ],
     )?;
     if inserted == 0 {
@@ -1002,6 +1049,9 @@ struct ModelSegmentAccumulator {
     reasoning_tokens: i64,
     estimated_cost_microusd: Option<i64>,
     unpriced_event_count: i64,
+    cache_write_tokens: i64,
+    cache_write_1h_tokens: i64,
+    reported_cost_microusd: Option<i64>,
 }
 
 impl ModelSegmentAccumulator {
@@ -1052,7 +1102,8 @@ fn rebuild_session_model_segments(
         let mut statement = transaction.prepare(
             "SELECT source_file_id, occurred_at_ms, model_provider, model_raw,
                     COALESCE(pricing_model_id, ''), input_tokens, cached_input_tokens,
-                    output_tokens, reasoning_tokens, estimated_cost_microusd
+                    output_tokens, reasoning_tokens, estimated_cost_microusd,
+                    cache_write_tokens, cache_write_1h_tokens, reported_cost_microusd
              FROM usage_events
              WHERE session_id = ?1 AND LOWER(TRIM(model_raw)) <> 'codex-auto-review'
              ORDER BY source_file_id, event_ordinal, id",
@@ -1069,6 +1120,9 @@ fn rebuild_session_model_segments(
                 row.get::<_, i64>(7)?,
                 row.get::<_, i64>(8)?,
                 row.get::<_, Option<i64>>(9)?,
+                row.get::<_, i64>(10)?,
+                row.get::<_, i64>(11)?,
+                row.get::<_, Option<i64>>(12)?,
             ))
         })?;
         for row in rows {
@@ -1083,6 +1137,9 @@ fn rebuild_session_model_segments(
                 output_tokens,
                 reasoning_tokens,
                 estimated_cost_microusd,
+                cache_write_tokens,
+                cache_write_1h_tokens,
+                reported_cost_microusd,
             ) = row?;
             if let Some(segment) =
                 segments
@@ -1096,6 +1153,16 @@ fn rebuild_session_model_segments(
                         )
                     })
             {
+                segment.cache_write_tokens += cache_write_tokens;
+                segment.cache_write_1h_tokens += cache_write_1h_tokens;
+                if let Some(cost) = reported_cost_microusd {
+                    segment.reported_cost_microusd = Some(
+                        segment
+                            .reported_cost_microusd
+                            .unwrap_or(0)
+                            .saturating_add(cost),
+                    );
+                }
                 segment.add(
                     occurred_at_ms,
                     input_tokens,
@@ -1118,6 +1185,9 @@ fn rebuild_session_model_segments(
                     reasoning_tokens,
                     estimated_cost_microusd,
                     unpriced_event_count: i64::from(estimated_cost_microusd.is_none()),
+                    cache_write_tokens,
+                    cache_write_1h_tokens,
+                    reported_cost_microusd,
                 });
             }
         }
@@ -1140,9 +1210,9 @@ fn rebuild_session_model_segments(
                 session_id, segment_index, started_at_ms, ended_at_ms,
                 model_provider, model_raw, pricing_model_id, input_tokens,
                 cached_input_tokens, output_tokens, reasoning_tokens,
-                estimated_cost_microusd, unpriced_event_count
+                estimated_cost_microusd, unpriced_event_count, cache_write_tokens, cache_write_1h_tokens, reported_cost_microusd
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULLIF(?7, ''), ?8, ?9,
-                       ?10, ?11, ?12, ?13)",
+                       ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 session_id,
                 segment_index as i64,
@@ -1157,6 +1227,7 @@ fn rebuild_session_model_segments(
                 segment.reasoning_tokens,
                 segment.estimated_cost_microusd,
                 segment.unpriced_event_count,
+                segment.cache_write_tokens, segment.cache_write_1h_tokens, segment.reported_cost_microusd,
             ],
         )?;
     }
@@ -1429,7 +1500,7 @@ fn recompute_session_summary(
 ) -> AppResult<()> {
     let totals = transaction.query_row(
         "SELECT COALESCE(SUM(input_tokens), 0),
-                COALESCE(SUM(input_tokens - cached_input_tokens), 0),
+                COALESCE(SUM(input_tokens - cached_input_tokens - cache_write_tokens), 0),
                 COALESCE(SUM(cached_input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
                 COALESCE(SUM(reasoning_tokens), 0),
@@ -1450,6 +1521,11 @@ fn recompute_session_summary(
             ))
         },
     )?;
+    transaction.execute("UPDATE sessions SET
+        cache_write_tokens=(SELECT COALESCE(SUM(cache_write_tokens),0) FROM session_model_segments WHERE session_id=?1),
+        cache_write_1h_tokens=(SELECT COALESCE(SUM(cache_write_1h_tokens),0) FROM session_model_segments WHERE session_id=?1),
+        reported_cost_microusd=(SELECT SUM(reported_cost_microusd) FROM session_model_segments WHERE session_id=?1)
+        WHERE id=?1", [session_id])?;
     let activity = transaction.query_row(
         "SELECT COALESCE(SUM(active_ms), 0),
                 COALESCE(SUM(CASE WHEN method = 'lifecycle' THEN 1 ELSE 0 END), 0),
@@ -1604,7 +1680,8 @@ fn rebuild_session_daily(
             workspace_id, model_provider, model_raw, pricing_model_id, archived,
             active_ms, input_tokens, fresh_input_tokens, cached_input_tokens,
             output_tokens, reasoning_tokens, total_tokens, priced_cost_microusd,
-            priced_event_count, unpriced_event_count, last_activity_at_ms
+            priced_event_count, unpriced_event_count, last_activity_at_ms,
+            cache_write_tokens, cache_write_1h_tokens, reported_cost_microusd
          )
          SELECT e.session_id, e.local_date, e.timezone_id,
                 MIN(e.day_start_utc_ms), MAX(e.day_end_utc_ms), s.workspace_id,
@@ -1618,7 +1695,7 @@ fn rebuild_session_daily(
                           AND NOT (LOWER(e.model_provider) = 'openai'
                                    AND LOWER(e.model_raw) = 'codex-auto-review')
                          THEN 1 ELSE 0 END),
-                MAX(e.occurred_at_ms)
+                MAX(e.occurred_at_ms), SUM(e.cache_write_tokens), SUM(e.cache_write_1h_tokens), SUM(e.reported_cost_microusd)
          FROM usage_events e JOIN sessions s ON s.id = e.session_id
          WHERE e.session_id = ?1 AND LOWER(TRIM(e.model_raw)) <> 'codex-auto-review'
          GROUP BY e.session_id, e.local_date, e.timezone_id, s.workspace_id,
@@ -1840,6 +1917,15 @@ fn workspace_id(normalized_path: &str) -> String {
 }
 
 fn synthetic_title(session_id: &str, timestamp_ms: Option<i64>) -> String {
+    // External session namespaces are identity, not the visible short ID.
+    let session_id = if ["claude:", "opencode:", "dsh:"]
+        .iter()
+        .any(|prefix| session_id.starts_with(prefix))
+    {
+        session_id.rsplit(':').next().unwrap_or(session_id)
+    } else {
+        session_id
+    };
     let date = timestamp_ms
         .and_then(DateTime::<Utc>::from_timestamp_millis)
         .map_or_else(
@@ -3665,6 +3751,7 @@ mod tests {
                     scope: crate::export::ExportScope::Sessions,
                     privacy: crate::export::ExportPrivacy::FullPath,
                     filters: crate::query::UsageFilters {
+                        agent: None,
                         range: crate::query::RangeSelection {
                             preset: crate::query::RangePreset::Custom,
                             start_ms: Some(1_783_641_600_000),

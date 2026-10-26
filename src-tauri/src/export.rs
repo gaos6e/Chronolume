@@ -172,12 +172,13 @@ fn export_dashboard(format: ExportFormat, snapshot: DashboardSnapshot) -> AppRes
         ("session_count", hero.session_count.to_string()),
         ("active_ms", hero.active_ms.to_string()),
         ("active_days", hero.active_days.to_string()),
+        ("cache_write_tokens", hero.cache_write_tokens.to_string()),
     ] {
         push_csv_row(&mut csv, &[metric, &value]);
     }
     Ok(ExportOutput {
         content: csv,
-        rows: 9,
+        rows: 10,
     })
 }
 
@@ -214,7 +215,7 @@ fn export_sessions(format: ExportFormat, rows: Vec<SessionRow>) -> AppResult<Exp
         return json_output_with_count(rows);
     }
     let mut csv = String::from(
-        "session,workspace,started_ms,ended_ms,active_ms,active_method,provider,model,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,archived,integrity,tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count\r\n",
+        "session,workspace,started_ms,ended_ms,active_ms,active_method,provider,model,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,archived,integrity,tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count,agent,parent_session_id,cache_write_tokens,cache_write_1h_tokens,reported_cost_microusd\r\n",
     );
     for row in &rows {
         push_csv_row(
@@ -239,6 +240,11 @@ fn export_sessions(format: ExportFormat, rows: Vec<SessionRow>) -> AppResult<Exp
                 &optional_f64(row.tokens_per_second),
                 &optional_f64(row.average_first_token_latency_ms),
                 &row.first_token_latency_sample_count.to_string(),
+                &row.agent,
+                row.parent_session_id.as_deref().unwrap_or(""),
+                &row.cache_write_tokens.to_string(),
+                &row.cache_write_1h_tokens.to_string(),
+                &optional_i64(row.reported_cost_microusd),
             ],
         );
     }
@@ -253,7 +259,7 @@ fn export_models(format: ExportFormat, rows: Vec<ModelRow>) -> AppResult<ExportO
         return json_output_with_count(rows);
     }
     let mut csv = String::from(
-        "model,pricing_id,sessions,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,unpriced_events,last_used_ms,average_tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count\r\n",
+        "model,pricing_id,sessions,input_tokens,cached_tokens,output_tokens,reasoning_tokens,total_tokens,cost_microusd,unpriced_events,last_used_ms,average_tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count,cache_write_tokens\r\n",
     );
     for row in &rows {
         push_csv_row(
@@ -273,6 +279,7 @@ fn export_models(format: ExportFormat, rows: Vec<ModelRow>) -> AppResult<ExportO
                 &optional_f64(row.average_tokens_per_second),
                 &optional_f64(row.average_first_token_latency_ms),
                 &row.first_token_latency_sample_count.to_string(),
+                &row.cache_write_tokens.to_string(),
             ],
         );
     }
@@ -385,6 +392,11 @@ mod tests {
     #[test]
     fn tps_exports_append_csv_columns_and_serialize_json_numbers_or_null() {
         let session = SessionRow {
+            agent: "codex".into(),
+            parent_session_id: None,
+            cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
+            reported_cost_microusd: None,
             id: "s1".into(),
             title: "Session 1".into(),
             workspace_id: "w1".into(),
@@ -411,6 +423,7 @@ mod tests {
             integrity_status: "complete".into(),
         };
         let model = ModelRow {
+            cache_write_tokens: 0,
             model: session.latest_model.clone(),
             pricing_model_id: None,
             session_count: 1,
@@ -445,10 +458,10 @@ mod tests {
         .unwrap();
         let lines: Vec<_> = csv.content.lines().collect();
         assert!(lines[0].ends_with(
-            ",tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count"
+            ",tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count,agent,parent_session_id,cache_write_tokens,cache_write_1h_tokens,reported_cost_microusd"
         ));
-        assert!(lines[1].ends_with(",40,1250.5,2"));
-        assert!(lines[2].ends_with(",,,0"));
+        assert!(lines[1].ends_with(",40,1250.5,2,codex,,0,0,"));
+        assert!(lines[2].ends_with(",,,0,codex,,0,0,"));
         assert_eq!(lines[0].split(',').count(), lines[2].split(',').count());
         let json = export_sessions(ExportFormat::Json, vec![session, missing_session]).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json.content).unwrap();
@@ -465,9 +478,9 @@ mod tests {
         )
         .unwrap();
         let lines: Vec<_> = csv.content.lines().collect();
-        assert!(lines[0].ends_with(",average_tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count"));
-        assert!(lines[1].ends_with(",40,1250.5,2"));
-        assert!(lines[2].ends_with(",,,0"));
+        assert!(lines[0].ends_with(",average_tokens_per_second,average_first_token_latency_ms,first_token_latency_sample_count,cache_write_tokens"));
+        assert!(lines[1].ends_with(",40,1250.5,2,0"));
+        assert!(lines[2].ends_with(",,,0,0"));
         assert_eq!(lines[0].split(',').count(), lines[2].split(',').count());
         let json = export_models(ExportFormat::Json, vec![model, missing_model]).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json.content).unwrap();

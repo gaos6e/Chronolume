@@ -1,4 +1,4 @@
-import { CalendarRange, RefreshCw } from 'lucide-react';
+import { CalendarRange, Layers3, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 import type {
@@ -7,6 +7,9 @@ import type {
   RangePreset,
   UsageFilters,
 } from '../types';
+
+import { AgentMark } from './AgentBadge';
+import { agents } from '../lib/agents';
 
 const presets: Array<{ value: RangePreset; label: string }> = [
   { value: 'today', label: '今日' },
@@ -21,9 +24,12 @@ const presets: Array<{ value: RangePreset; label: string }> = [
 
 export function cascadeFilter(
   current: UsageFilters,
-  field: 'workspaceId' | 'modelProvider' | 'model',
+  field: 'agent' | 'workspaceId' | 'modelProvider' | 'model',
   value?: string,
 ): UsageFilters {
+  if (field === 'agent') {
+    return { ...current, agent: value, modelProvider: undefined, model: undefined };
+  }
   if (field === 'workspaceId') {
     return { ...current, workspaceId: value, modelProvider: undefined, model: undefined };
   }
@@ -87,6 +93,13 @@ export function DashboardFilters({
 
   return (
     <section className="filter-card" aria-label={t('全局筛选')}>
+      <div className="agent-filter-bar">
+        <div className="agent-filter-options" role="group" aria-label={t('Agent 来源')}>
+          <button type="button" className={`agent-option${!filters.agent ? ' selected' : ''}`} aria-pressed={!filters.agent} onClick={() => onChange(cascadeFilter(filters, 'agent'))}><Layers3 />{t('全部 agent')}</button>
+          {agents.map((agent) => <button type="button" key={agent.id} className={`agent-option ${agent.id}${filters.agent === agent.id ? ' selected' : ''}`} aria-pressed={filters.agent === agent.id} onClick={() => onChange(cascadeFilter(filters, 'agent', agent.id))}><AgentMark agent={agent.id} />{agent.label}</button>)}
+        </div>
+        <span className="agent-filter-caption">{t('同一工作区，统一洞察')}</span>
+      </div>
       <div className="preset-row" role="group" aria-label={t('时间范围')}>
         {presets.map((preset) => (
           <button

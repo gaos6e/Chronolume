@@ -76,7 +76,7 @@ export function WorkspaceVisibilityDialog({
               <span><strong>{option.label}</strong><small>{option.normalizedPath}</small></span>
             </label>
           ))}
-          {!loading && !error && visibleOptions.length === 0 && <p>{t(options.length === 0 ? '暂无工作区。请先在桌面应用中同步 Codex 数据。' : '没有匹配的工作区。')}</p>}
+          {!loading && !error && visibleOptions.length === 0 && <p>{t(options.length === 0 ? '暂无工作区。请先在桌面应用中同步 agent 数据。' : '没有匹配的工作区。')}</p>}
         </div>
         <footer>
           <button type="button" className="quiet-button" disabled={saving} onClick={onClose}>{t('取消')}</button>

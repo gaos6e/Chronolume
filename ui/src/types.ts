@@ -18,6 +18,7 @@ export interface RangeSelection {
 }
 
 export interface UsageFilters {
+  agent?: string;
   range: RangeSelection;
   workspaceId?: string;
   modelProvider?: string;
@@ -35,6 +36,7 @@ export interface ResolvedRange {
 }
 
 export interface HeroMetrics {
+  cacheWriteTokens?: number;
   realTotalTokens: number;
   inputTokens: number;
   freshInputTokens: number;
@@ -57,6 +59,7 @@ export interface HeroMetrics {
 }
 
 export interface TrendPoint {
+  cacheWriteTokens?: number;
   key: string;
   timestampMs: number;
   inputTokens: number;
@@ -94,6 +97,7 @@ export interface DashboardSnapshot {
 }
 
 export interface SourceStatus {
+  agent?: string;
   kind: 'session' | 'archived_session' | 'state_db' | 'logs_db';
   exists: boolean;
   fileCount: number;
@@ -177,6 +181,11 @@ export interface WorkspaceRow {
 }
 
 export interface SessionRow {
+  agent?: string;
+  parentSessionId?: string;
+  cacheWrite1hTokens?: number;
+  reportedCostMicrousd?: number;
+  cacheWriteTokens?: number;
   id: string;
   title: string;
   workspaceId: string;
@@ -204,6 +213,7 @@ export interface SessionRow {
 }
 
 export interface ModelRow {
+  cacheWriteTokens?: number;
   model: string;
   pricingModelId?: string;
   sessionCount: number;
@@ -283,6 +293,9 @@ export interface ActivitySegmentRow {
 }
 
 export interface UsageEventRow {
+  cacheWriteTokens?: number;
+  cacheWrite1hTokens?: number;
+  reportedCostMicrousd?: number;
   id: number;
   occurredAtMs: number;
   provider: string;
@@ -313,6 +326,7 @@ export interface SessionDetail {
 }
 
 export interface DiagnosticSource {
+  agent?: string;
   kind: string;
   relativePath: string;
   status: string;
@@ -365,6 +379,7 @@ export interface ModelPriceRecord {
   revision: number;
   sourceUrl?: string;
   sourceUpdatedAtMs?: number;
+  pricingNote?: string;
 }
 
 export type ModelPriceInput = Pick<
@@ -430,4 +445,17 @@ export interface ExportResult {
 export interface AppPreferences {
   idleGapMinutes: number;
   visibleWorkspaceIds: string[];
+}
+
+export interface SourceSettings {
+  codex?: string | null;
+  claude?: string | null;
+  opencode?: string | null;
+  dsh?: string | null;
+}
+export interface AgentSourceSetting {
+  agent: string;
+  path: string;
+  customPath?: string;
+  available: boolean;
 }

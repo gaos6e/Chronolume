@@ -48,6 +48,8 @@ pub enum ArchiveFilter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageFilters {
+    #[serde(default)]
+    pub agent: Option<String>,
     pub range: RangeSelection,
     pub workspace_id: Option<String>,
     pub model_provider: Option<String>,
@@ -78,6 +80,7 @@ pub struct ResolvedRangeDto {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeroMetrics {
+    pub cache_write_tokens: i64,
     pub real_total_tokens: i64,
     pub input_tokens: i64,
     pub fresh_input_tokens: i64,
@@ -102,6 +105,7 @@ pub struct HeroMetrics {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrendPoint {
+    pub cache_write_tokens: i64,
     pub key: String,
     pub timestamp_ms: i64,
     pub input_tokens: i64,
@@ -318,7 +322,8 @@ impl UsageQuery {
                                           AND NOT (LOWER(e.model_provider) = 'openai'
                                                    AND LOWER(e.model_raw) = 'codex-auto-review')
                                          THEN 1 ELSE 0 END), 0),
-                        COUNT(DISTINCT e.session_id), COUNT(DISTINCT e.local_date)
+                        COUNT(DISTINCT e.session_id), COUNT(DISTINCT e.local_date),
+                        COALESCE(SUM(e.cache_write_tokens), 0)
                  FROM usage_events e JOIN sessions s ON s.id = e.session_id
                  WHERE {condition}"
             );
@@ -335,6 +340,7 @@ impl UsageQuery {
                         unpriced_events: row.get(7)?,
                         sessions: row.get(8)?,
                         active_days: row.get(9)?,
+                        cache_write: row.get(10)?,
                         active_ms: 0,
                     })
                 })
@@ -395,7 +401,7 @@ impl UsageQuery {
                         COALESCE(SUM(d.priced_event_count), 0),
                         COALESCE(SUM(d.unpriced_event_count), 0),
                         COUNT(DISTINCT d.session_id), COUNT(DISTINCT d.local_date),
-                        COALESCE(SUM(d.active_ms), 0)
+                        COALESCE(SUM(d.active_ms), 0), COALESCE(SUM(d.cache_write_tokens), 0)
                  FROM session_daily_usage d WHERE {condition}"
             );
             connection
@@ -412,6 +418,7 @@ impl UsageQuery {
                         sessions: row.get(8)?,
                         active_days: row.get(9)?,
                         active_ms: row.get(10)?,
+                        cache_write: row.get(11)?,
                     })
                 })
                 .map_err(AppError::from)
@@ -437,7 +444,7 @@ impl UsageQuery {
                                   AND NOT (LOWER(e.model_provider) = 'openai'
                                            AND LOWER(e.model_raw) = 'codex-auto-review')
                                  THEN 1 ELSE 0 END),
-                        COUNT(DISTINCT e.session_id)
+                        COUNT(DISTINCT e.session_id), SUM(e.cache_write_tokens)
                  FROM usage_events e JOIN sessions s ON s.id = e.session_id
                  WHERE {condition} GROUP BY bucket ORDER BY bucket"
             );
@@ -457,6 +464,7 @@ impl UsageQuery {
                     estimated_cost_microusd: if priced > 0 { row.get(7)? } else { None },
                     unpriced_event_count: row.get(9)?,
                     session_count: row.get(10)?,
+                    cache_write_tokens: row.get(11)?,
                     active_ms: 0,
                 })
             })?;
@@ -481,7 +489,7 @@ impl UsageQuery {
                                   AND NOT (LOWER(e.model_provider) = 'openai'
                                            AND LOWER(e.model_raw) = 'codex-auto-review')
                                  THEN 1 ELSE 0 END),
-                        COUNT(DISTINCT e.session_id)
+                        COUNT(DISTINCT e.session_id), SUM(e.cache_write_tokens)
                  FROM usage_events e JOIN sessions s ON s.id = e.session_id
                  WHERE {condition} GROUP BY e.local_date ORDER BY e.local_date"
             );
@@ -501,6 +509,7 @@ impl UsageQuery {
                         estimated_cost_microusd: if priced > 0 { row.get(8)? } else { None },
                         unpriced_event_count: row.get(10)?,
                         session_count: row.get(11)?,
+                        cache_write_tokens: row.get(12)?,
                         active_ms: 0,
                     })
                 })?
@@ -544,7 +553,7 @@ impl UsageQuery {
                         SUM(d.output_tokens), SUM(d.reasoning_tokens), SUM(d.total_tokens),
                         SUM(d.priced_cost_microusd), SUM(d.priced_event_count),
                         SUM(d.unpriced_event_count), COUNT(DISTINCT d.session_id),
-                        SUM(d.active_ms)
+                        SUM(d.active_ms), SUM(d.cache_write_tokens)
                  FROM session_daily_usage d WHERE {condition}
                  GROUP BY d.local_date ORDER BY d.local_date"
             );
@@ -564,6 +573,7 @@ impl UsageQuery {
                     unpriced_event_count: row.get(10)?,
                     session_count: row.get(11)?,
                     active_ms: row.get(12)?,
+                    cache_write_tokens: row.get(13)?,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -651,6 +661,7 @@ impl UsageQuery {
                 SqlValue::Text(range.start_date_string()),
                 SqlValue::Text(range.end_date_string()),
             ];
+            push_agent(&mut provider_clauses, &mut provider_values, filters, "d");
             push_archive(
                 &mut provider_clauses,
                 &mut provider_values,
@@ -820,6 +831,7 @@ impl ResolvedRange {
 
 #[derive(Debug)]
 struct HeroRow {
+    cache_write: i64,
     input: i64,
     fresh: i64,
     cached: i64,
@@ -838,6 +850,7 @@ fn hero_from_row(row: HeroRow, calendar_days: u64) -> HeroMetrics {
     let total = row.input.saturating_add(row.output);
     let cost = (row.priced_events > 0).then_some(row.cost.unwrap_or(0));
     HeroMetrics {
+        cache_write_tokens: row.cache_write,
         real_total_tokens: total,
         input_tokens: row.input,
         fresh_input_tokens: row.fresh,
@@ -912,8 +925,9 @@ fn rollup_conditions(
     }
     if let Some(model) = filters.model.as_deref() {
         clauses.push(format!("{alias}.model_raw = ?"));
-        values.push(SqlValue::Text(model.to_string()));
+        values.push(SqlValue::Text(crate::pricing::canonical_model_name(model)));
     }
+    push_agent(&mut clauses, &mut values, filters, alias);
     push_archive(&mut clauses, &mut values, filters.archived, alias);
     (clauses.join(" AND "), values)
 }
@@ -958,9 +972,22 @@ fn push_filters(
             "latest_model_raw"
         };
         clauses.push(format!("{alias}.{column} = ?"));
-        values.push(SqlValue::Text(model.to_string()));
+        values.push(SqlValue::Text(crate::pricing::canonical_model_name(model)));
     }
+    push_agent(clauses, values, filters, session_alias);
     push_archive(clauses, values, filters.archived, session_alias);
+}
+
+fn push_agent(
+    clauses: &mut Vec<String>,
+    values: &mut Vec<SqlValue>,
+    filters: &UsageFilters,
+    alias: &str,
+) {
+    if let Some(agent) = filters.agent.as_deref() {
+        clauses.push(format!("{alias}.agent = ?"));
+        values.push(SqlValue::Text(agent.to_string()));
+    }
 }
 
 fn push_archive(
@@ -998,7 +1025,9 @@ fn query_simple_options(
 }
 
 fn canonical_provider_sql(column: &str) -> String {
-    format!("CASE WHEN LOWER(TRIM({column})) = 'openai' THEN 'openai' ELSE 'custom' END")
+    format!(
+        "CASE WHEN TRIM({column}) = '' THEN 'unknown' WHEN LOWER(TRIM({column})) = 'codex_local_access' THEN 'custom' ELSE LOWER(TRIM({column})) END"
+    )
 }
 
 fn group_weekly(points: Vec<TrendPoint>, timezone: Tz) -> Vec<TrendPoint> {
@@ -1015,6 +1044,7 @@ fn group_weekly(points: Vec<TrendPoint>, timezone: Tz) -> Vec<TrendPoint> {
                 timestamp_ms: point.timestamp_ms,
                 input_tokens: 0,
                 fresh_input_tokens: 0,
+                cache_write_tokens: 0,
                 cached_input_tokens: 0,
                 output_tokens: 0,
                 reasoning_tokens: 0,
@@ -1026,6 +1056,7 @@ fn group_weekly(points: Vec<TrendPoint>, timezone: Tz) -> Vec<TrendPoint> {
             });
         entry.input_tokens += point.input_tokens;
         entry.fresh_input_tokens += point.fresh_input_tokens;
+        entry.cache_write_tokens += point.cache_write_tokens;
         entry.cached_input_tokens += point.cached_input_tokens;
         entry.output_tokens += point.output_tokens;
         entry.reasoning_tokens += point.reasoning_tokens;
@@ -1159,6 +1190,7 @@ mod tests {
         let query = seeded_query();
         let snapshot = query
             .dashboard(&UsageFilters {
+                agent: None,
                 range: RangeSelection {
                     preset: RangePreset::Custom,
                     start_ms: Some(1_783_641_600_000),
@@ -1209,6 +1241,7 @@ mod tests {
             .unwrap();
 
         let mut filters = UsageFilters {
+            agent: None,
             range: RangeSelection {
                 preset: RangePreset::Custom,
                 start_ms: Some(1_783_641_600_000),
@@ -1300,6 +1333,7 @@ mod tests {
         let query = seeded_query();
         let snapshot = query
             .dashboard(&UsageFilters {
+                agent: None,
                 range: RangeSelection {
                     preset: RangePreset::Custom,
                     start_ms: Some(1_783_641_601_500),
