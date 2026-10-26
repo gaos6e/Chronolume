@@ -1,6 +1,6 @@
 # macOS 打包、签名与发布门禁
 
-Chronolume 2.1.0 的 macOS 目标是 macOS 12.0+ Universal 应用，同时包含 `arm64` 与 `x86_64` slice。macOS bundle identifier 为 `com.gaos6e.chronolume`；应用保持非沙盒，不启用 `com.apple.security.app-sandbox`，也不在仓库中保存证书、Team ID 或公证凭据。
+Chronolume 的 macOS 目标是 macOS 12.0+ Universal 应用，同时包含 `arm64` 与 `x86_64` slice。macOS bundle identifier 为 `com.gaos6e.chronolume`；应用保持非沙盒，不启用 `com.apple.security.app-sandbox`，也不在仓库中保存证书、Team ID 或公证凭据。
 
 ## 阶段 A：未签名候选
 
@@ -9,7 +9,7 @@ Chronolume 2.1.0 的 macOS 目标是 macOS 12.0+ Universal 应用，同时包含
 1. 在 `macos-14` runner 安装 `aarch64-apple-darwin` 与 `x86_64-apple-darwin`。
 2. 执行前端检查、Rust 测试和锁文件驱动的许可证生成。
 3. 通过 Tauri 锁定 CLI 的 `universal-apple-darwin` 与 `--no-sign` 构建 `.app`/`.dmg`。
-4. 用 `lipo` 检查两个 slice，用 `plutil` 检查 Bundle ID、2.1.0、最低系统 12.0 和应用名。
+4. 用 `lipo` 检查两个 slice，用 `plutil` 检查 Bundle ID、当前版本号、最低系统 12.0 和应用名。
 5. `hdiutil verify` 并只读挂载 DMG，检查应用结构、唯一主二进制，以及 `Info.plist` 声明的 ICNS 或 Asset Catalog 图标资源。
 6. 使用一个不存在 `.codex` 的临时 HOME 启动挂载后的应用，确认进程不会在启动阶段退出，并断言数据库只出现在 `Library/Application Support/Chronolume/v2`、没有 bundle-ID 嵌套目录，再安全终止和卸载。
 7. 扫描包内数据库、WAL、日志和 `auth.json`，生成 `SHA256SUMS-macos.txt` 与 `verification-macos.txt`。

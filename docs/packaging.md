@@ -1,6 +1,6 @@
 # Windows 打包
 
-Chronolume 2.1 使用 Tauri 2 构建原生 Release EXE、当前用户级 NSIS 安装器和便携 ZIP。Windows 继续使用 `com.gaos6e.codexusage`，以保持安装升级和 WebView 偏好连续。打包前先执行标准验证：
+Chronolume 2.2 使用 Tauri 2 构建原生 Release EXE、当前用户级 NSIS 安装器和便携 ZIP。Windows 继续使用 `com.gaos6e.codexusage`，以保持安装升级和 WebView 偏好连续。打包前先执行标准验证：
 
 ```powershell
 npm ci
@@ -31,6 +31,20 @@ src-tauri\target\release\bundle\portable\Chronolume-<版本>-windows-x64-portabl
 ```
 
 便携 ZIP 包含同一个 Release EXE、README、项目 `LICENSE` 和由实际锁文件生成的 `THIRD_PARTY_LICENSES.txt`，不附带分析数据库或用户数据。三个性能 benchmark 由显式 Cargo feature 管理，仅供开发验证，安装器和便携包都不得包含它们；smoke 会审计安装目录只能出现 `chronolume.exe` 与 `uninstall.exe`。`build-portable.ps1` 会在压缩前重新执行许可证审计；旧的手写 `THIRD_PARTY_NOTICES.md` 不再是输入。安装器当前未签名，Windows SmartScreen 可能在建立签名信誉前显示警告。运行时目录由 Windows 平台路径解析，不依赖源码仓库位置。
+
+## 2.2.0 验证记录（2026-10-26）
+
+应用源码提交 `d2c3fbae76487847206727588d1fe07782a44928`（`v2.2.0`）。[Windows 与 macOS CI](https://github.com/gaos6e/Chronolume/actions/runs/40356606401) 均通过，每个平台前端 45 项、Rust 119 项测试通过，包含版本一致性、类型检查、Lint、许可证审计、Rust 格式、检查及 Clippy。
+
+| 产物 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `chronolume.exe` | 11,000,320 | `5C7EEF07A23DF4476568DBCCF8DA3616BE1746C15C04FD7E80640AE445F60F8D` |
+| `Chronolume_2.2.0_x64-setup.exe` | 3,413,709 | `78454BAF4581D1C49D4228131D05CAF35253DD9A6235DF78BFA09975D01F3DA7` |
+| `Chronolume-2.2.0-windows-x64-portable.zip` | 4,608,956 | `746F7CAC51218024695993134442B0C6E893B6EA869D93580A3C33CA96F0833B` |
+
+许可证按本版锁文件重新生成，Windows 生产构建通过。NSIS 静默安装退出码为 0，安装版和便携版分别在 369.36 ms、379.64 ms 创建窗口，均确认版本为 2.2.0；这些数字只证明窗口启动。安装目录仅含应用及卸载器两个 EXE，安装版与独立 EXE 仅有正常的 `UNK` → `NSS` 三字节分发标记差异。既有安装目录及桌面快捷方式已更新。
+
+真实分析库保持 Schema 7，SQLite `quick_check` 为 `ok`；模型、用量事件、模型片段、活跃片段、永久摘要、延迟、来源游标及价格列均未保留已合并的模型历史别名。完整迁移及计价口径见 [agent 接入说明](agents.md)和[计价说明](pricing.md)。六项 Windows 发布附件的大小及 GitHub SHA-256 已与本机构建逐一核对一致；分析库、备份和实际数据截图仅留在本机。
 
 ## 2.1.11 验证记录（2026-10-25）
 
