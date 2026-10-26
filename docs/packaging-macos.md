@@ -26,6 +26,17 @@ bash ./scripts/verify-macos-bundle.sh
 
 未签名 `.app`/`.dmg` 只用于测试，文件名必须带 `unsigned`。工作流会把通过验证的候选追加到对应 GitHub Release，同时保留短期 Actions artifact；这些资产不视为受信任的正式 macOS 分发，也不向用户提供绕过 Gatekeeper 的操作说明。
 
+### 2.2.0 阶段 A 构建记录
+
+2026-10-26 的 [GitHub Actions run 40357744496](https://github.com/gaos6e/Chronolume/actions/runs/40357744496) 完成源码检查、前端 45 项与 Rust 119 项测试、双目标 Release 编译及许可证生成，应用源码为 `d2c3fbae76487847206727588d1fe07782a44928`（`v2.2.0`）。Universal 架构、Info.plist、图标、DMG 完整性与只读挂载、无 `.codex` 临时 HOME 启动、精确数据库目录和包内数据库／日志／凭据扫描均通过。
+
+| 产物 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `Chronolume-2.2.0-macos-universal-unsigned.app.zip` | 8,978,687 | `cb673307d96ae799ad829a5452f015d2993f864752d0561e19ec2478bfb4c932` |
+| `Chronolume_2.2.0_universal-unsigned.dmg` | 9,108,598 | `a51689c1ef05919423760a786c1a9abe3c54b118ad92a86b2c219683897de397` |
+
+两项候选、`SHA256SUMS-macos.txt` 及 `verification-macos.txt` 已附加到 [2.2.0 Release](https://github.com/gaos6e/Chronolume/releases/tag/v2.2.0)，下载后大小与 GitHub SHA-256 均核对一致，校验和清单也通过本地复算。该结果仅代表 GitHub runner 的未签名候选，未完成 Developer ID 签名、公证、Gatekeeper 或外部 Mac 真机验收。
+
 ### 2.1.0 阶段 A 构建记录
 
 2026-07-11 的 [GitHub Actions run 29150578335](https://github.com/gaos6e/Chronolume/actions/runs/29150578335) 在 `macos-14-arm64` runner image `20260629.0180.1` 上完成。前端 28 项测试、Rust 55 项测试、双目标 Release 编译、Universal `lipo` 检查、Info.plist、图标、DMG 完整性/只读挂载、无 `.codex` 临时 HOME 启动、精确数据库目录和敏感文件扫描均通过。
