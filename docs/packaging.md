@@ -1,6 +1,6 @@
 # Windows 打包
 
-Chronolume 2.2 使用 Tauri 2 构建原生 Release EXE、当前用户级 NSIS 安装器和便携 ZIP。Windows 继续使用 `com.gaos6e.codexusage`，以保持安装升级和 WebView 偏好连续。打包前先执行标准验证：
+Chronolume 2.3 使用 Tauri 2 构建原生 Release EXE、当前用户级 NSIS 安装器和便携 ZIP。Windows 继续使用 `com.gaos6e.codexusage`，以保持安装升级和 WebView 偏好连续。打包前先执行标准验证：
 
 ```powershell
 npm ci
@@ -31,6 +31,20 @@ src-tauri\target\release\bundle\portable\Chronolume-<版本>-windows-x64-portabl
 ```
 
 便携 ZIP 包含同一个 Release EXE、README、项目 `LICENSE` 和由实际锁文件生成的 `THIRD_PARTY_LICENSES.txt`，不附带分析数据库或用户数据。三个性能 benchmark 由显式 Cargo feature 管理，仅供开发验证，安装器和便携包都不得包含它们；smoke 会审计安装目录只能出现 `chronolume.exe` 与 `uninstall.exe`。`build-portable.ps1` 会在压缩前重新执行许可证审计；旧的手写 `THIRD_PARTY_NOTICES.md` 不再是输入。安装器当前未签名，Windows SmartScreen 可能在建立签名信誉前显示警告。运行时目录由 Windows 平台路径解析，不依赖源码仓库位置。
+
+## 2.3.0 验证记录（2026-11-06）
+
+发布源码 `b6b773a9640a6bc9cb1ca5cfb69da573119bc877`（`v2.3.0`）的 [Windows / macOS CI](https://github.com/gaos6e/Chronolume/actions/runs/42226340170) 均通过，包含每平台前端 48 项、Rust 121 项测试，以及类型检查、Lint、Clippy、格式、版本和许可证审计。macOS runner 因旧镜像退役改用 `macos-15`，应用最低 macOS 版本保持 12.0。
+
+| 产物 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `chronolume.exe` | 11,137,024 | `E9B7747D6C6C8ACD51D5F9357309B0EFB0DFB43B9F71A8790C0D1D101D77A230` |
+| `Chronolume_2.3.0_x64-setup.exe` | 3,453,724 | `33CC4D1C9BDB5968CFBBE53D81CCC68B7B5271637BCC1D2DD19BAB534A0C1B75` |
+| `Chronolume-2.3.0-windows-x64-portable.zip` | 4,663,485 | `9CC369072E5EC6F0D2D28F99926CC2C5E94C73BCA954C3CE558A324D1DCA5FB4` |
+
+最终 NSIS 静默安装退出码为 0，安装版与便携版分别在 331.97 ms、332.34 ms 创建窗口，版本均为 2.3.0；这些数字只证明启动，不代表查询性能。安装目录仅有应用及卸载器，安装 EXE 与发布 EXE 仅有 `UNK` → `NSS` 三字节分发标记差异；原有目录、桌面及开始菜单快捷方式已更新。六项 Windows 发布附件的大小和 GitHub SHA-256 均与本地最终产物一致。
+
+升级前备份真实分析库，升级后 Schema 9、SQLite `quick_check` 为 `ok`，原有 4,231 个会话、设置和价格覆盖保留。新增 WorkBuddy 两版共 29 个会话、976 次原生调用、89,459,124 Token，与隔离导入及独立原生用量复算一致；29 份源 transcript 哈希保持不变。三组深浅主题／900–1440 像素／135% 字体布局检查无溢出或页面运行错误。个人数据、数据库备份与本机截图未上传到发布附件。
 
 ## 2.2.0 验证记录（2026-10-26）
 
