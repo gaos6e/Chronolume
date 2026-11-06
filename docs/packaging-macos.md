@@ -2,11 +2,13 @@
 
 Chronolume 的 macOS 目标是 macOS 12.0+ Universal 应用，同时包含 `arm64` 与 `x86_64` slice。macOS bundle identifier 为 `com.gaos6e.chronolume`；应用保持非沙盒，不启用 `com.apple.security.app-sandbox`，也不在仓库中保存证书、Team ID 或公证凭据。
 
+2026-11-06：GitHub 已停用 `macos-14`，CI、候选构建及签名工作流迁移到 `macos-15`，应用最低系统版本仍为 12.0。依据 [GitHub runner 退役公告](https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/)。
+
 ## 阶段 A：未签名候选
 
 没有 Apple Developer 凭据和自有 Mac 时，`Build and upload unsigned macOS candidate` 工作流会在 Release 发布后自动运行，也可手动指定已有 Release 标签运行。它会：
 
-1. 在 `macos-14` runner 安装 `aarch64-apple-darwin` 与 `x86_64-apple-darwin`。
+1. 在 `macos-15` runner 安装 `aarch64-apple-darwin` 与 `x86_64-apple-darwin`。
 2. 执行前端检查、Rust 测试和锁文件驱动的许可证生成。
 3. 通过 Tauri 锁定 CLI 的 `universal-apple-darwin` 与 `--no-sign` 构建 `.app`/`.dmg`。
 4. 用 `lipo` 检查两个 slice，用 `plutil` 检查 Bundle ID、当前版本号、最低系统 12.0 和应用名。
