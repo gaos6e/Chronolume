@@ -8,6 +8,7 @@ use rusqlite::types::Value as SqlValue;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+use crate::source::WORKBUDDY_PROXY_SESSION_PREFIX;
 use crate::store::UsageStore;
 
 mod analytics;
@@ -351,9 +352,10 @@ impl UsageQuery {
                                                    AND LOWER(e.model_raw) = 'codex-auto-review')
                                          THEN 1 ELSE 0 END), 0),
                         COUNT(DISTINCT e.session_id), COUNT(DISTINCT e.local_date),
-                        COALESCE(SUM(e.cache_write_tokens), 0)
+                        COALESCE(SUM(e.cache_write_tokens), 0), {cache_hit_rate}
                  FROM usage_events e JOIN sessions s ON s.id = e.session_id
-                 WHERE {condition}"
+                 WHERE {condition}",
+                cache_hit_rate = cache_hit_rate_sql("e"),
             );
             connection
                 .query_row(&sql, params_from_iter(values.iter()), |row| {
@@ -369,6 +371,7 @@ impl UsageQuery {
                         sessions: row.get(8)?,
                         active_days: row.get(9)?,
                         cache_write: row.get(10)?,
+                        cache_hit_rate: row.get(11)?,
                         active_ms: 0,
                     })
                 })
@@ -429,8 +432,10 @@ impl UsageQuery {
                         COALESCE(SUM(d.priced_event_count), 0),
                         COALESCE(SUM(d.unpriced_event_count), 0),
                         COUNT(DISTINCT d.session_id), COUNT(DISTINCT d.local_date),
-                        COALESCE(SUM(d.active_ms), 0), COALESCE(SUM(d.cache_write_tokens), 0)
-                 FROM session_daily_usage d WHERE {condition}"
+                        COALESCE(SUM(d.active_ms), 0), COALESCE(SUM(d.cache_write_tokens), 0),
+                        {cache_hit_rate}
+                 FROM session_daily_usage d WHERE {condition}",
+                cache_hit_rate = cache_hit_rate_sql("d"),
             );
             connection
                 .query_row(&sql, params_from_iter(values.iter()), |row| {
@@ -447,6 +452,7 @@ impl UsageQuery {
                         active_days: row.get(9)?,
                         active_ms: row.get(10)?,
                         cache_write: row.get(11)?,
+                        cache_hit_rate: row.get(12)?,
                     })
                 })
                 .map_err(AppError::from)
@@ -860,9 +866,21 @@ impl ResolvedRange {
     }
 }
 
+fn cache_hit_rate_sql(alias: &str) -> String {
+    // Proxy logs preserve input/output counts but omit cache details. Their
+    // session namespace also identifies older imports after detail retention.
+    let has_cache_stats =
+        format!("{alias}.session_id NOT GLOB '{WORKBUDDY_PROXY_SESSION_PREFIX}*'");
+    format!(
+        "CAST(SUM({alias}.cached_input_tokens) FILTER (WHERE {has_cache_stats}) AS REAL) /
+         NULLIF(SUM({alias}.input_tokens) FILTER (WHERE {has_cache_stats}), 0)"
+    )
+}
+
 #[derive(Debug)]
 struct HeroRow {
     cache_write: i64,
+    cache_hit_rate: Option<f64>,
     input: i64,
     fresh: i64,
     cached: i64,
@@ -889,7 +907,7 @@ fn hero_from_row(row: HeroRow, calendar_days: u64) -> HeroMetrics {
         cached_input_tokens: row.cached,
         output_tokens: row.output,
         reasoning_tokens: row.reasoning,
-        cache_hit_rate: (row.input > 0).then_some(row.cached as f64 / row.input as f64),
+        cache_hit_rate: row.cache_hit_rate,
         estimated_cost_microusd: cost,
         unpriced_event_count: row.unpriced_events,
         session_count: row.sessions,

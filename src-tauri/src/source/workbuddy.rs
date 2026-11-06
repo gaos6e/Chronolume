@@ -1,5 +1,5 @@
-//! WorkBuddy desktop transcripts. Database rows supply metadata, never token or
-//! credit totals. Both desktop variants share one native session namespace.
+//! WorkBuddy desktop and CodeBuddy Code transcripts share one session namespace.
+//! Desktop database rows supply metadata, never token or credit totals.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -54,6 +54,19 @@ fn metadata(root: &Path) -> AppResult<BTreeMap<String, Metadata>> {
     rows.collect::<Result<_, _>>().map_err(AppError::from)
 }
 
+fn is_transcript(entry: &walkdir::DirEntry) -> bool {
+    entry.file_type().is_file()
+        && entry.path().extension().and_then(|s| s.to_str()) == Some("jsonl")
+}
+
+pub(super) fn has_transcripts(root: &Path) -> bool {
+    WalkDir::new(root.join("projects"))
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .any(|entry| is_transcript(&entry))
+}
+
 fn files(roots: &[PathBuf]) -> AppResult<BTreeMap<String, Vec<PathBuf>>> {
     let mut files: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     let mut seen = BTreeSet::new();
@@ -64,9 +77,7 @@ fn files(roots: &[PathBuf]) -> AppResult<BTreeMap<String, Vec<PathBuf>>> {
         }
         for entry in WalkDir::new(projects).follow_links(false) {
             let entry = entry.map_err(|_| AppError::filesystem())?;
-            if !entry.file_type().is_file()
-                || entry.path().extension().and_then(|s| s.to_str()) != Some("jsonl")
-            {
+            if !is_transcript(&entry) {
                 continue;
             }
             let path = fs::canonicalize(entry.path())?;
@@ -172,6 +183,7 @@ struct ProviderData {
 }
 #[derive(Deserialize)]
 struct LegacyMessage {
+    model: Option<String>,
     usage: Option<Value>,
 }
 
@@ -299,9 +311,11 @@ pub(super) fn stream(
                 continue;
             };
             let data = entry.provider_data.unwrap_or_default();
+            let message = entry.message.as_ref();
             let model = data
                 .request_model_id
                 .or(data.model)
+                .or_else(|| message.and_then(|m| m.model.clone()))
                 .unwrap_or_else(|| "unknown".into());
             let provider = data
                 .provider

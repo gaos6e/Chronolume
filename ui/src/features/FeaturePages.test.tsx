@@ -52,30 +52,36 @@ function renderPage(node: React.ReactNode) {
 }
 
 describe('feature pages', () => {
-  it('configures both WorkBuddy roots and preserves them while editing another agent', async () => {
+  it('configures the WorkBuddy CLI root and preserves it while editing another agent', async () => {
     const sources = [
       { agent: 'codex', path: 'C:/default/codex', customPath: 'D:/codex', available: true },
       { agent: 'workbuddy', path: 'C:/default/workbuddy', available: true, roots: [
         { settingKey: 'workbuddy', label: 'WorkBuddy', path: 'C:/default/workbuddy', available: false },
         { settingKey: 'workbuddyAi', label: 'WorkBuddy AI', path: 'D:/wb-ai', customPath: 'D:/wb-ai', available: true },
+        { settingKey: 'workbuddyCli', label: 'CodeBuddy Code CLI', path: 'C:/default/.codebuddy', available: false },
+        { settingKey: 'workbuddyProxy', label: 'WorkBuddyProxy', path: '', available: false },
       ] },
     ];
     api.getSourceSettings.mockResolvedValue(sources);
-    api.saveSourceSettings.mockResolvedValue(sources);
+    const savedRoots = sources[1].roots?.map((root) => ({ ...root, customPath: `E:/${root.settingKey}` }));
+    api.saveSourceSettings.mockResolvedValue([sources[0], { ...sources[1], roots: savedRoots }]);
     const onSaved = vi.fn();
     renderPage(<SourceConnections syncing={false} onSaved={onSaved} />);
     await screen.findByText('D:/wb-ai');
     const card = screen.getByRole('heading', { name: 'WorkBuddy' }).closest('article') as HTMLElement;
+    expect(within(card).getByText('CodeBuddy Code CLI')).toBeInTheDocument();
     fireEvent.click(within(card).getByRole('button', { name: '配置目录' }));
-    fireEvent.change(screen.getByLabelText('WorkBuddy · 数据目录'), { target: { value: 'E:/wb' } });
-    fireEvent.change(screen.getByLabelText('WorkBuddy AI · 数据目录'), { target: { value: 'E:/wb-ai' } });
+    fireEvent.change(screen.getByLabelText('WorkBuddy · 数据目录'), { target: { value: 'E:/workbuddy' } });
+    fireEvent.change(screen.getByLabelText('WorkBuddy AI · 数据目录'), { target: { value: 'E:/workbuddyAi' } });
+    fireEvent.change(screen.getByLabelText('CodeBuddy Code CLI · 数据目录'), { target: { value: 'E:/workbuddyCli' } });
+    fireEvent.change(screen.getByLabelText('WorkBuddyProxy · 日志目录'), { target: { value: 'E:/workbuddyProxy' } });
     fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
-    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenCalledWith(expect.objectContaining({ codex: 'D:/codex', workbuddy: 'E:/wb', workbuddyAi: 'E:/wb-ai' })));
+    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenCalledWith(expect.objectContaining({ codex: 'D:/codex', workbuddy: 'E:/workbuddy', workbuddyAi: 'E:/workbuddyAi', workbuddyCli: 'E:/workbuddyCli', workbuddyProxy: 'E:/workbuddyProxy' })));
     await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
     const codex = screen.getByRole('heading', { name: 'Codex' }).closest('article') as HTMLElement;
     fireEvent.click(within(codex).getByRole('button', { name: '配置目录' }));
     fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
-    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ workbuddyAi: 'D:/wb-ai' })));
+    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ workbuddyCli: 'E:/workbuddyCli', workbuddyProxy: 'E:/workbuddyProxy' })));
   });
   it('filters official price rows and keeps the source link and zero rates visible', async () => {
     api.getModels.mockResolvedValue({ items: [], total: 0, page: 0, pageSize: 30 });

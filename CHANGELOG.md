@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1 — 2026-11-06
+
+- 将 CodeBuddy Code CLI 并入 WorkBuddy，自动发现 `~/.codebuddy`，支持 `CODEBUDDY_CONFIG_DIR` 和独立目录覆盖。CLI 与桌面版的重复会话和调用合并统计。
+- WorkBuddy 可选接入本地 WorkBuddyProxy 日志，按请求 ID 统计具备时间和 Token 的成功请求。配置页分别展示各来源的发现状态。
+- 缺少缓存明细的 WorkBuddyProxy 用量不参与缓存命中率，仍计入 Token 总量。
+
 ## 2.3.0 — 2026-11-06
 
 - 接入 WorkBuddy 与 WorkBuddy AI，自动发现两个目录并统一为第五个 agent；支持独立目录配置、跨版本去重、归档、工作区、模型、工具与导出。

@@ -56,6 +56,6 @@ export function SettingsPage() {
       {!validIdle && <p className="form-error" id="idle-gap-error" role="alert">{t('请输入 1–240 之间的整数。')}</p>}
       <ActionFeedback pending={savePreferences.isPending} error={savePreferences.error} success={savePreferences.isSuccess && '偏好已保存，将用于后续同步的活跃时间估算。'} />
     </section>
-    <section className="feature-card about-card"><h2>Chronolume 2.3.0</h2><p>{t('Chronolume 汇总本机 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 的 Token、成本和时间。分析库不保存对话正文或工具参数，不访问在线配额；价格更新仅在主动触发时联网。')}</p></section>
+    <section className="feature-card about-card"><h2>Chronolume 2.3.1</h2><p>{t('Chronolume 汇总本机 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 的 Token、成本和时间。分析库不保存对话正文或工具参数，不访问在线配额；价格更新仅在主动触发时联网。')}</p></section>
   </section>;
 }

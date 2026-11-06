@@ -460,11 +460,13 @@ export interface SourceSettings {
   dsh?: string | null;
   workbuddy?: string | null;
   workbuddyAi?: string | null;
+  workbuddyCli?: string | null;
+  workbuddyProxy?: string | null;
 }
 export interface AgentSourceSetting {
   agent: string;
   path: string;
   customPath?: string;
   available: boolean;
-  roots?: { settingKey: 'workbuddy' | 'workbuddyAi'; label: string; path: string; customPath?: string; available: boolean }[];
+  roots?: { settingKey: keyof SourceSettings; label: string; path: string; customPath?: string; available: boolean }[];
 }

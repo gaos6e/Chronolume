@@ -10,11 +10,11 @@ Chronolume 将 Codex、Claude Code、OpenCode、DeepSeek Harness 和 WorkBuddy �
 | Claude Code | `~/.claude` | 尊重 `CLAUDE_CONFIG_DIR`；读取 `projects/**/*.jsonl`，包括旧版平铺及嵌套 `subagents/agent-*.jsonl`；跳过编排 journal 和 orphaned 文件 |
 | OpenCode | `~/.local/share/opencode` | 尊重 `OPENCODE_DATA_DIR`、`XDG_DATA_HOME` 和 `OPENCODE_DB`；读取 `opencode.db`、`opencode-<channel>.db`，兼容 `session`/`session_v2` 元数据、`message/part` 与 `session_message` 表及旧 `storage/session`、`storage/message`、`storage/part` JSON |
 | DeepSeek Harness | `~/.dsh` | 尊重 `DSH_HOME`；读取 `sessions/<project>/<id>/session[.vN].jsonl[.zstd]`，支持 v0–v4 原始或 Zstandard 压缩日志，同一会话只读取最高规范代号文件 |
-| WorkBuddy / WorkBuddy AI | `~/.workbuddy`、`~/.workbuddy-ai` | 两个版本合并；读取 `projects/**/*.jsonl`，只读 `workbuddy.db` 补充会话元数据；两个根目录可分别配置 |
+| WorkBuddy / WorkBuddy AI / CodeBuddy Code CLI | `~/.workbuddy`、`~/.workbuddy-ai`、`~/.codebuddy` | 同一个 agent；读取 `projects/**/*.jsonl`。桌面版只读 `workbuddy.db` 补充元数据。CLI 尊重 `CODEBUDDY_CONFIG_DIR`，各目录可单独配置。可选读取 WorkBuddyProxy 成功请求日志 |
 
 Windows 的 `~` 是本机用户主目录，OpenCode 同样使用 `.local/share/opencode`，不套用 Windows 的 AppData 路径。`OPENCODE_DB` 可以是绝对路径或相对 OpenCode 数据目录的文件名；`:memory:` 会话无法从磁盘导入。
 
-在 **数据 → 连接你的工作节奏 → 配置目录** 中，可为每个 agent 指定一个目录；OpenCode 也接受数据库文件的绝对路径。DeepSeek Harness 也接受自定义 session-persistence 根目录。显式设置优先于环境变量；清空输入恢复自动发现。保存后增量同步，已有历史不会因旧目录暂时不可访问而被删除。首版面向本机 Windows/macOS 数据；不自动扫描 WSL、远程机器或多个账号配置目录。
+在 **数据 → 连接你的工作节奏 → 配置目录** 中，可为各来源指定目录。OpenCode 也接受数据库文件的绝对路径，DeepSeek Harness 也接受自定义 session-persistence 根目录。显式设置优先于环境变量。清空自动发现来源的路径会恢复默认设置，清空 WorkBuddyProxy 路径会停用该来源。保存后增量同步，已有历史不会因旧目录暂时不可访问而被删除。首版面向本机 Windows/macOS 数据，不自动扫描 WSL、远程机器或多个账号配置目录。
 
 ## 会话与统计口径
 
@@ -22,7 +22,7 @@ Windows 的 `~` 是本机用户主目录，OpenCode 同样使用 `.local/share/o
 - Claude Code 子 agent 单独列为子会话，用量和会话数独立计入，详情可导航到主会话；OpenCode 的原生父会话关系也会保留。源主会话已被清理时，关联可能无法打开。
 - Claude 的流式重复记录按消息 ID 与请求 ID 合并，各类 Token 保留已报告的最大值，工具按调用 ID 去重。OpenCode 同时读取数据库和旧文件，同一消息优先使用数据库内容，兼容新表替代旧表；fork 中早于子会话创建时间的复制记录不再计费。
 - DeepSeek Harness 按 turn/step/request attempt 合并用量；后续样本替换同请求的先前值（包括向下修正），重试独立计入。仅统计原生 `tool/call`，流式工具片段不重复计数。v0–v1 的 `seedLength` 与 v2–v4 的带 `inherited` 标记边界排除复制的父历史，普通恢复标记保留历史用量。
-- 输入总量 = 新增输入 + 缓存读取 + 缓存写入；输出包含可识别的推理 Token，推理是输出的子项，不重复加入总量。缓存命中率的分母是输入总量。
+- 输入总量 = 新增输入 + 缓存读取 + 缓存写入；输出包含可识别的推理 Token，推理是输出的子项，不重复加入总量。缓存命中率按缓存读取量除以对应输入总量计算。WorkBuddyProxy 日志缺少缓存明细，仍计入 Token 总量，但不参与命中率。
 - 并行会话的活跃时长累加，表示累计 agent 工作量。Codex 沿用生命周期与等待扣除规则；OpenCode 使用已完成消息的原生起止时间，同一会话内重叠区间只计一次；DeepSeek Harness 使用 step 起止时间并保留工具执行时间，原生 turn 与首个流式 token 时间用于首字延迟；没有原生区间时沿用可配置空闲间隔估算并明确标记。Claude Code 的消息间隔估算不能准确识别全部用户等待，不等同于人工投入时间。
 - 首字延迟只用原生计时，无数据返回空值；不会从消息时间差补造首字延迟。没有活跃计时则 TPS 为空。
 
@@ -57,14 +57,16 @@ DeepSeek Harness 格式与去重口径依据[官方 session persistence](https:/
 正式安装后的分析库另以当前目录独立复核 8 个逻辑会话（含新增空会话），同时覆盖真实 v0/v4 文件；总量仍为 4,109,674 Token、70 次请求、112 次工具调用，最新代际选择保持统计一致，旧源文件哈希保持不变。
 
 
-## WorkBuddy 与 WorkBuddy AI
+## WorkBuddy、WorkBuddy AI 与 CodeBuddy Code CLI
 
-两个版本归为同一个 `workbuddy` agent，默认只读发现 `~/.workbuddy` 与 `~/.workbuddy-ai`，数据页可分别覆盖两个根目录。读取 `projects/**/*.jsonl`，通过 `workbuddy.db` 的会话元数据补充工作区、创建时间和归档状态；不读取凭据、积分账单、工具结果或对话正文。默认不接入独立 CodeBuddy 产品目录。
+两个桌面版本和 CodeBuddy Code CLI 归为同一个 `workbuddy` agent。CLI 目录按显式配置、`CODEBUDDY_CONFIG_DIR`、`~/.codebuddy` 的顺序选择。三者从 `projects/**/*.jsonl` 读取用量，桌面版使用 `workbuddy.db` 补充工作区、创建时间和归档状态。只读取统计所需字段。[CLI 目录说明](https://www.workbuddy.cn/docs/cli/codebuddy-dir)
 
-`providerData.usage` 优先，其次 `rawUsage`，最后使用兼容的 `message.usage`；同一调用的多种表示不累加。输入总量已经包含缓存读写，新增输入扣除两者；推理是输出子项。原生消息标识去重调用，调用 ID 去重工具，复制到两个版本的同一会话合并统计。明确失败、取消、中断或不完整的记录跳过；同一会话此前完成的调用保留。缺失 Token 不按文本估算。
+`providerData.usage` 优先，其次 `rawUsage`，最后使用兼容的 `message.usage`；同一调用的多种表示不累加。输入总量已经包含缓存读写，新增输入扣除两者；推理是输出子项。原生消息标识去重调用，调用 ID 去重工具，复制到不同来源的同一会话合并统计。明确失败、取消、中断或不完整的记录跳过；同一会话此前完成的调用保留。缺失 Token 不按文本估算。
 
 trace 与 transcript 当前不能可靠关联，因此 trace 汇总和耗时不参与统计，WorkBuddy 不启用空闲间隔估时。缺失计时的活跃时长、TPS、TTFT 显示 `—`；接口返回 `activeTimingAvailable: false`，CSV 导出为空，JSON 导出对应计时为 `null`。混合统计只计已有时长，模型 TPS 不纳入无计时的输出。
 
 模型按记录中的原生 ID 匹配现有官方参考价和用户覆盖；不能确认的内部名称（例如 `hy4-preview-f`）保持未定价，积分不换算美元。工作区归并与其他 agent 一致，会话 ID 使用 `workbuddy:` 命名空间。当前真实样本来自 Windows WorkBuddy 5.5.6 和 WorkBuddy AI 5.9.4；macOS 仅由跨平台测试与构建验证，不等同于真机日志验收。
 
 2026-11-06 Windows 本机隔离验收：两版共 29 个会话、976 次原生调用、89,459,124 Token，与独立按原始 usage 复算的输入、缓存读写、输出和推理量逐型号一致。29 个来源首次同步无解析/读取错误，再次同步无变化；29 份 transcript 的 SHA-256 不变。原生活跃片段为零，未以消息间隔推算时长。
+
+使用 `--no-session-persistence` 的 CLI 调用不会生成会话 JSONL。在 WorkBuddy 卡片中配置 **WorkBuddyProxy 日志目录** 后，Chronolume 从该目录只读匹配 `proxy-YYYYMMDD-HHMMSS.stdout.log`，统计带有效请求 ID、请求时间及正用量的成功记录。代理按原生请求 ID 去重，按日志文件作为导入批次汇总，批次不代表独立对话。缺少日期或标识的旧记录跳过。早期缺失型号的用量保留为 `unknown`，缓存、推理、工具和原生活跃时长缺失时不补估。若同一次调用另有标准会话记录，两个格式没有共享 ID，代理目录只应指向关闭会话持久化的桥接实例。[CLI 参数说明](https://www.workbuddy.cn/docs/cli/cli-reference)

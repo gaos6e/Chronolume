@@ -6,7 +6,8 @@ use rusqlite::{OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    UsageFilters, UsageQuery, canonical_provider_sql, push_agent, push_archive, rollup_conditions,
+    UsageFilters, UsageQuery, cache_hit_rate_sql, canonical_provider_sql, push_agent, push_archive,
+    rollup_conditions,
 };
 use crate::error::{AppError, AppResult};
 use crate::source::PARSER_VERSION;
@@ -563,11 +564,13 @@ impl UsageQuery {
                         SUM(d.output_tokens), SUM(d.reasoning_tokens), SUM(d.total_tokens),
                         SUM(d.priced_cost_microusd), SUM(d.priced_event_count),
                         SUM(d.unpriced_event_count), MAX(d.last_activity_at_ms),
-                        {tps}, MAX(l.average_latency_ms), COALESCE(MAX(l.sample_count), 0), SUM(d.cache_write_tokens)
+                        {tps}, MAX(l.average_latency_ms), COALESCE(MAX(l.sample_count), 0),
+                        SUM(d.cache_write_tokens), {cache_hit_rate}
                  FROM timed_usage d LEFT JOIN latency l ON l.model_raw = d.model_raw
                  GROUP BY d.model_raw
                  ORDER BY {nulls_last}{order} {direction}, d.model_raw ASC LIMIT ? OFFSET ?",
                 tps = MODEL_TPS_SQL,
+                cache_hit_rate = cache_hit_rate_sql("d"),
             );
             let mut paged_values = values.clone();
             paged_values.extend(values);
@@ -594,7 +597,7 @@ impl UsageQuery {
                         output_tokens: row.get(6)?,
                         reasoning_tokens: row.get(7)?,
                         total_tokens,
-                        cache_hit_rate: (input > 0).then_some(cached as f64 / input as f64),
+                        cache_hit_rate: row.get(17)?,
                         estimated_cost_microusd: priced_cost,
                         unpriced_event_count: row.get(11)?,
                         average_cost_microusd_per_million_tokens: priced_cost

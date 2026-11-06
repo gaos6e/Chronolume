@@ -55,7 +55,7 @@ export function UsageHero({ hero, partial }: UsageHeroProps) {
         <MiniMetric icon={<DatabaseZap />} label={t('缓存写入')} value={formatTokens(hero.cacheWriteTokens ?? 0)} tone="teal" />
         <MiniMetric icon={<BrainCircuit />} label={t('推理')} value={formatTokens(hero.reasoningTokens)} tone="orange" />
         <div className="hit-rate-card">
-          <div><span>{t('缓存命中率')}</span><strong>{hero.cacheHitRate == null ? 'N/A' : `${(hitRate * 100).toFixed(1)}%`}</strong></div>
+          <div><span title={t('缺少缓存明细的代理记录不参与计算。')}>{t('缓存命中率')}</span><strong>{hero.cacheHitRate == null ? '—' : `${(hitRate * 100).toFixed(1)}%`}</strong></div>
           <div className="hit-track"><span style={{ width: `${hitRate * 100}%` }} /></div>
         </div>
       </div>
