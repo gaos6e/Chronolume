@@ -43,6 +43,11 @@ const MIGRATIONS: &[(i64, &str)] = &[
         7,
         include_str!("../../migrations/0007_canonical_model_identity.sql"),
     ),
+    (
+        8,
+        include_str!("../../migrations/0008_flash_model_identity.sql"),
+    ),
+    (9, include_str!("../../migrations/0009_workbuddy.sql")),
 ];
 
 /// v2 分析库的深 Module。连接配置、迁移、池化和事务策略留在实现内部。
@@ -186,6 +191,24 @@ fn configure_connection(connection: &mut Connection) -> rusqlite::Result<()> {
         },
     )?;
     connection.create_scalar_function(
+        "canonical_sol_model_name",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let model = context.get::<Option<String>>(0)?;
+            // Freeze migration 7's original alias scope when upgrading older
+            // databases; Flash prices and summary collisions are handled by 8.
+            Ok(model.map(|model| {
+                let canonical = canonical_model_name(&model);
+                if canonical == "gpt-6.1-sol" {
+                    canonical
+                } else {
+                    model
+                }
+            }))
+        },
+    )?;
+    connection.create_scalar_function(
         "model_strength_key",
         1,
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
@@ -208,6 +231,97 @@ fn configure_connection(connection: &mut Connection) -> rusqlite::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrates_flash_alias_and_reprices_retained_history_from_v6_and_v7() {
+        for previous_version in [6, 7] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("flash.sqlite3");
+            let mut connection = Connection::open(&path).unwrap();
+            configure_connection(&mut connection).unwrap();
+            connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at_ms INTEGER NOT NULL) STRICT;").unwrap();
+            for (version, sql) in MIGRATIONS
+                .iter()
+                .filter(|(version, _)| *version <= previous_version)
+            {
+                connection.execute_batch(sql).unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO schema_migrations VALUES (?1,'previous',0)",
+                        [version],
+                    )
+                    .unwrap();
+            }
+            connection.execute_batch("INSERT INTO workspaces(id,normalized_path,display_name,created_at_ms,updated_at_ms) VALUES ('w','C:/work/shared','shared',0,0);
+                INSERT INTO sessions(id,workspace_id,synthetic_title,latest_model_raw,primary_model_raw,parser_version,updated_at_ms,total_tokens) VALUES ('opencode:mixed','w','Session','deepseek-v4.1-flash-free','gpt-5',11,0,5500000),('opencode:base','w','Session','deepseek-v4.1-flash','deepseek-v4.1-flash',11,0,3000000);
+                INSERT INTO source_files(source_key,relative_path,source_kind,parser_version,current_model_raw,current_pricing_model_id,first_token_context_json) VALUES ('opencode:flash','flash','session',11,'deepseek-v4.1-flash-free','deepseek-v4.1-flash-free','{\"model_raw\":\"deepseek-v4.1-flash-free\"}');").unwrap();
+            for (session, model, tokens, cost, index) in [
+                (
+                    "opencode:mixed",
+                    "deepseek-v4.1-flash",
+                    1_000_000,
+                    300_000,
+                    0,
+                ),
+                (
+                    "opencode:mixed",
+                    "deepseek-v4.1-flash-free",
+                    2_000_000,
+                    0,
+                    1,
+                ),
+                ("opencode:mixed", "gpt-5", 2_500_000, 3_125_000, 2),
+                (
+                    "opencode:base",
+                    "deepseek-v4.1-flash",
+                    3_000_000,
+                    900_000,
+                    0,
+                ),
+            ] {
+                connection.execute("INSERT INTO session_model_segments(session_id,segment_index,started_at_ms,ended_at_ms,model_provider,model_raw,pricing_model_id,input_tokens,estimated_cost_microusd) VALUES (?1,?5,0,1,'opencode',?2,?2,?3,?4)",rusqlite::params![session,model,tokens,cost,index]).unwrap();
+                connection.execute("INSERT INTO session_daily_usage(session_id,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,workspace_id,model_provider,model_raw,pricing_model_id,archived,total_tokens,input_tokens,fresh_input_tokens,active_ms,priced_cost_microusd,priced_event_count,reported_cost_microusd,last_activity_at_ms) VALUES (?1,'2026-10-01','UTC',0,1,'w','opencode',?2,?2,0,?3,?3,?3,100,?4,1,0,0)",rusqlite::params![session,model,tokens,cost]).unwrap();
+            }
+            connection.execute_batch("INSERT INTO daily_usage_rollups(agent,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,workspace_id,model_provider,model_raw,pricing_model_id,archived,session_count,total_tokens,active_ms,priced_cost_microusd) SELECT 'opencode',local_date,timezone_id,0,1,'w','opencode',model_raw,pricing_model_id,0,COUNT(DISTINCT session_id),SUM(total_tokens),SUM(active_ms),SUM(priced_cost_microusd) FROM session_daily_usage GROUP BY model_raw,pricing_model_id;
+                INSERT INTO app_settings VALUES ('builtin-pricing-revision','2026102700',0);
+                INSERT INTO session_turn_latencies(source_file_id,session_id,byte_offset,occurred_at_ms,local_date,timezone_id,model_provider,model_raw,latency_ms) VALUES (1,'opencode:mixed',0,0,'2026-10-01','UTC','opencode','deepseek-v4.1-flash-free',123);").unwrap();
+            for (model, input) in [
+                ("deepseek-v4.1-flash", "0.3"),
+                ("deepseek-v4.1-flash-free", "0"),
+            ] {
+                connection.execute("INSERT INTO model_prices(pricing_id,provider,display_name,input_per_million_usd,output_per_million_usd,cache_read_per_million_usd,default_input_per_million_usd,default_output_per_million_usd,default_cache_read_per_million_usd,is_builtin,is_overridden,is_deleted,revision,created_at_ms,updated_at_ms) VALUES (?1,'opencode',?1,?2,'1.2','0.006',?2,'1.2','0.006',1,0,0,1,0,0)",rusqlite::params![model,input]).unwrap();
+            }
+            drop(connection);
+            let store = UsageStore::open(&path).unwrap();
+            assert_eq!(store.schema_version().unwrap(), 9);
+            assert_eq!(store.app_setting("builtin-pricing-revision").unwrap(), None);
+            store.with_reader(|connection| {
+                let summary:(i64,i64,i64,i64)=connection.query_row("SELECT total_tokens,active_ms,priced_cost_microusd,session_count FROM daily_usage_rollups WHERE model_raw='deepseek-v4.1-flash'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+                assert_eq!(summary,(6_000_000,300,1_200_000,2));
+                assert_eq!(connection.query_row("SELECT primary_model_raw FROM sessions WHERE id='opencode:mixed'",[],|r|r.get::<_,String>(0))?,"deepseek-v4.1-flash");
+                let cursor:(String,String)=connection.query_row("SELECT current_model_raw,json_extract(first_token_context_json,'$.model_raw') FROM source_files",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                assert_eq!(cursor,("deepseek-v4.1-flash".into(),"deepseek-v4.1-flash".into()));
+                let latency:(String,i64)=connection.query_row("SELECT model_raw,latency_ms FROM session_turn_latencies",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                assert_eq!(latency,("deepseek-v4.1-flash".into(),123));
+                Ok(())
+            }).unwrap();
+            store.seed_builtin_prices().unwrap();
+            assert!(!store.model_prices(true).unwrap().iter().any(|p| {
+                p.pricing_id.ends_with("flash-free")
+                    && p.provider == "opencode"
+                    && p.pricing_id.starts_with("deepseek-")
+            }));
+            store.reprice_all(chrono_tz::UTC).unwrap();
+            store.with_reader(|connection| {
+                let summary:(i64,i64,i64,i64)=connection.query_row("SELECT total_tokens,active_ms,priced_cost_microusd,session_count FROM daily_usage_rollups WHERE model_raw='deepseek-v4.1-flash'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+                assert_eq!(summary,(6_000_000,300,1_800_000,2));
+                let mixed_cost:i64=connection.query_row("SELECT estimated_cost_microusd FROM session_model_segments WHERE session_id='opencode:mixed' AND segment_index=1",[],|r|r.get(0))?;
+                assert_eq!(mixed_cost,600_000);
+                assert_eq!(connection.query_row("SELECT COUNT(*) FROM usage_events",[],|r|r.get::<_,i64>(0))?,0);
+                Ok(())
+            }).unwrap();
+        }
+    }
 
     #[test]
     fn migrates_v6_merging_model_identity_without_losing_retained_usage_or_session_counts() {
@@ -248,7 +362,7 @@ mod tests {
         }
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 7);
+        assert_eq!(store.schema_version().unwrap(), 9);
         store.with_reader(|connection| {
             assert_eq!(connection.query_row("SELECT primary_model_raw FROM sessions WHERE id='mixed'",[],|r|r.get::<_,String>(0))?,"gpt-6.1-sol");
             let daily:(i64,i64,i64,i64,i64)=connection.query_row("SELECT total_tokens,active_ms,priced_cost_microusd,cache_write_tokens,reported_cost_microusd FROM session_daily_usage WHERE session_id='mixed' AND model_raw='gpt-6.1-sol'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
@@ -275,7 +389,7 @@ mod tests {
     fn creates_required_schema_and_passes_integrity_check() {
         let store = UsageStore::open_in_memory().expect("open test database");
 
-        assert_eq!(store.schema_version().expect("schema version"), 7);
+        assert_eq!(store.schema_version().expect("schema version"), 9);
         assert!(store.integrity_check().expect("integrity check"));
 
         let required = [
@@ -334,7 +448,7 @@ mod tests {
         }
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 7);
+        assert_eq!(store.schema_version().unwrap(), 9);
         store.with_reader(|connection| {
             for agent in ["codex","claude","opencode"] {
                 let session:(i64,i64,i64) = connection.query_row("SELECT total_tokens,cache_write_tokens,reported_cost_microusd FROM sessions WHERE agent=?1",[agent],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
@@ -442,7 +556,7 @@ mod tests {
         connection.execute_batch("INSERT INTO source_files (source_key, relative_path, source_kind, file_size, mtime_ns, prefix_hash, parser_version, safe_offset, complete_line_offset, open_task_turn_id, open_task_started_at_ms) VALUES ('jsonl:existing', 'sessions/existing.jsonl', 'session', 1000, 1, 'hash', 10, 123, 123, 'existing-turn', 1000);").unwrap();
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 7);
+        assert_eq!(store.schema_version().unwrap(), 9);
         let checkpoint = store.source_checkpoints().unwrap().remove(0);
         assert_eq!(checkpoint.cursor.safe_offset, 123);
         assert_eq!(checkpoint.parser_version, 10);
@@ -470,7 +584,7 @@ mod tests {
         connection.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at_ms INTEGER NOT NULL) STRICT; INSERT INTO schema_migrations VALUES (2, 'migration_0002', 0); INSERT INTO source_files (source_key, relative_path, source_kind, file_size, mtime_ns, prefix_hash, parser_version, safe_offset, complete_line_offset, open_task_turn_id, open_task_started_at_ms, contains_embedded_history) VALUES ('jsonl:existing', 'sessions/existing.jsonl', 'session', 1000, 1, 'hash', 8, 123, 123, 'existing-turn', 1000, 1);").unwrap();
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 7);
+        assert_eq!(store.schema_version().unwrap(), 9);
         let checkpoint = store.source_checkpoints().unwrap().remove(0);
         assert_eq!(checkpoint.cursor.safe_offset, 123);
         assert_eq!(
@@ -511,7 +625,7 @@ mod tests {
         drop(connection);
 
         let store = UsageStore::open(&path).expect("migrate store");
-        assert_eq!(store.schema_version().expect("schema version"), 7);
+        assert_eq!(store.schema_version().expect("schema version"), 9);
         store
             .with_reader(|connection| {
                 let column_exists: i64 = connection.query_row(

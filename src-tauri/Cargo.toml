@@ -1,7 +1,7 @@
 [package]
 name = "chronolume"
-version = "2.2.0"
-description = "Private, offline-first insights into Codex, Claude Code, OpenCode, and DeepSeek Harness activity, usage, and cost"
+version = "2.3.0"
+description = "Private, offline-first insights into Codex, Claude Code, OpenCode, DeepSeek Harness, and WorkBuddy activity, usage, and cost"
 authors = ["gaos6e"]
 license = "MIT"
 edition = "2024"

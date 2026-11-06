@@ -1,6 +1,6 @@
 # 隐私边界
 
-Chronolume 2.1 在 Windows 与 macOS 上都对 Codex、Claude Code、OpenCode 与 DeepSeek Harness 的源目录只读，默认完全离线，无遥测、无后台上传、无代理、无账号读取，也不访问 `auth.json`。唯一可选网络操作是用户主动点击的可信价格更新；应用前必须展示来源、更新时间和差异。当前 `logs_2.sqlite` 实现只读取可验证的 `id/rowid` 数值水位，连日志正文也不选择。
+Chronolume 2.1 在 Windows 与 macOS 上都对 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 的源目录只读，默认完全离线，无遥测、无后台上传、无代理、无账号读取，也不访问 `auth.json`。唯一可选网络操作是用户主动点击的可信价格更新；应用前必须展示来源、更新时间和差异。当前 `logs_2.sqlite` 实现只读取可验证的 `id/rowid` 数值水位，连日志正文也不选择。
 
 绝不提取用于分析或持久化：
 

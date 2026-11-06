@@ -748,20 +748,6 @@
   },
   {
     "provider": "opencode",
-    "id": "deepseek-v4.1-flash-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
     "id": "beam-free",
     "rates": {
       "input": "0",

@@ -72,7 +72,7 @@ export function ProjectsPage({
                 <td>{workspace.sessionCount.toLocaleString()}</td>
                 <td>{formatTokens(workspace.totalTokens)}</td>
                 <td>{formatCost(workspace.estimatedCostMicrousd)}{workspace.unpricedEventCount > 0 && <small className="warning-copy"> {t('部分未定价')}</small>}</td>
-                <td>{formatDuration(workspace.activeMs)}</td>
+                <td>{formatDuration(workspace.activeTimingAvailable === false ? null : workspace.activeMs)}</td>
                 <td>{workspace.lastActivityAtMs ? new Date(workspace.lastActivityAtMs).toLocaleString() : '—'}</td>
                 <td><div className="row-actions"><button type="button" className="icon-button" aria-label={t('编辑工作区')} onClick={() => { save.reset(); setEditing({ id: workspace.id, alias: workspace.label, ignored: workspace.ignored }); }}><Pencil /></button><button type="button" className="icon-button" aria-label={t('打开工作区统计')} onClick={() => onOpenWorkspace(workspace.id)}><ChevronRight /></button></div></td>
               </tr>

@@ -22,12 +22,26 @@ pub struct SourceSettings {
     pub claude: Option<String>,
     pub opencode: Option<String>,
     pub dsh: Option<String>,
+    pub workbuddy: Option<String>,
+    pub workbuddy_ai: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSourceSetting {
     pub agent: String,
+    pub path: String,
+    pub custom_path: Option<String>,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<AgentSourceRoot>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSourceRoot {
+    pub setting_key: String,
+    pub label: String,
     pub path: String,
     pub custom_path: Option<String>,
     pub available: bool,
@@ -40,6 +54,8 @@ impl SourceSettings {
             &mut self.claude,
             &mut self.opencode,
             &mut self.dsh,
+            &mut self.workbuddy,
+            &mut self.workbuddy_ai,
         ] {
             *value = value
                 .take()
@@ -67,6 +83,16 @@ impl SourceSettings {
                 .map(PathBuf::from)
         };
         Ok(match agent {
+            "workbuddy" => self
+                .workbuddy
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".workbuddy")),
+            "workbuddyAi" => self
+                .workbuddy_ai
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".workbuddy-ai")),
             "codex" => self
                 .codex
                 .as_ref()
@@ -108,7 +134,7 @@ impl SourceSettings {
     }
 
     pub fn describe(&self) -> AppResult<Vec<AgentSourceSetting>> {
-        ["codex", "claude", "opencode", "dsh"]
+        ["codex", "claude", "opencode", "dsh", "workbuddy"]
             .into_iter()
             .map(|agent| {
                 let path = self.resolved(agent)?;
@@ -116,6 +142,7 @@ impl SourceSettings {
                     "codex" => &self.codex,
                     "claude" => &self.claude,
                     "dsh" => &self.dsh,
+                    "workbuddy" => &self.workbuddy,
                     _ => &self.opencode,
                 }
                 .clone();
@@ -125,6 +152,10 @@ impl SourceSettings {
                     }
                     "claude" => path.join("projects").is_dir(),
                     "dsh" => path.join("sessions").is_dir() || path.is_dir(),
+                    "workbuddy" => {
+                        path.join("projects").is_dir()
+                            || self.resolved("workbuddyAi")?.join("projects").is_dir()
+                    }
                     _ => {
                         path.is_file()
                             || path.join("storage").is_dir()
@@ -137,6 +168,26 @@ impl SourceSettings {
                     path: path.to_string_lossy().into_owned(),
                     custom_path,
                     available,
+                    roots: if agent == "workbuddy" {
+                        [
+                            ("workbuddy", "WorkBuddy", &self.workbuddy),
+                            ("workbuddyAi", "WorkBuddy AI", &self.workbuddy_ai),
+                        ]
+                        .into_iter()
+                        .map(|(key, label, custom)| {
+                            let root = self.resolved(key)?;
+                            Ok(AgentSourceRoot {
+                                setting_key: key.into(),
+                                label: label.into(),
+                                available: root.join("projects").is_dir(),
+                                path: root.to_string_lossy().into_owned(),
+                                custom_path: custom.clone(),
+                            })
+                        })
+                        .collect::<AppResult<Vec<_>>>()?
+                    } else {
+                        Vec::new()
+                    },
                 })
             })
             .collect()
@@ -162,11 +213,14 @@ impl MultiAgentSource {
     fn discover(&self) -> AppResult<ChangePlan> {
         let settings = self.settings.read();
         let mut plan = ChangePlan::default();
-        for agent in ["claude", "opencode", "dsh"] {
+        for agent in ["claude", "opencode", "dsh", "workbuddy"] {
             let root = settings.resolved(agent)?;
             let discovery = match agent {
                 "claude" => claude_files(&root),
                 "dsh" => super::dsh::discover(&root),
+                "workbuddy" => {
+                    super::workbuddy::discover(&[root, settings.resolved("workbuddyAi")?])
+                }
                 _ => super::opencode::discover(&root),
             };
             match discovery {
@@ -217,7 +271,7 @@ impl UsageSource for MultiAgentSource {
 
     fn plan(&self, checkpoints: &[SourceCheckpoint]) -> AppResult<ChangePlan> {
         let is_external = |key: &str| {
-            ["claude:", "opencode:", "dsh:"]
+            ["claude:", "opencode:", "dsh:", "workbuddy:"]
                 .iter()
                 .any(|prefix| key.starts_with(prefix))
         };
@@ -297,6 +351,17 @@ impl UsageSource for MultiAgentSource {
             super::opencode::stream(change, sink, cancel)
         } else if change.source_key.starts_with("dsh:") {
             super::dsh::stream(change, sink, cancel)
+        } else if change.source_key.starts_with("workbuddy:") {
+            let settings = self.settings();
+            super::workbuddy::stream(
+                change,
+                &[
+                    settings.resolved("workbuddy")?,
+                    settings.resolved("workbuddyAi")?,
+                ],
+                sink,
+                cancel,
+            )
         } else {
             FsCodexSource::new(self.settings.read().resolved("codex")?).stream(change, sink, cancel)
         }

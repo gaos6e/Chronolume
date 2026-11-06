@@ -110,8 +110,8 @@ export function ActivityHeatmap({ snapshot, metric, span, loading, error, onRetr
                 <div
                   key={point.date}
                   className={`heat-cell metric-${metric.replace('_', '-')} level-${level}`}
-                  title={`${point.date} · ${metricValue(metric, point.value)}`}
-                  aria-label={`${point.date}，${metricValue(metric, point.value)}`}
+                  title={`${point.date} · ${(metric === 'active_time' && point.activeTimingAvailable === false ? '—' : metricValue(metric, point.value))}`}
+                  aria-label={`${point.date}，${(metric === 'active_time' && point.activeTimingAvailable === false ? '—' : metricValue(metric, point.value))}`}
                   role="img"
                 />
               );

@@ -32,7 +32,7 @@
 .connections-description { max-width: 72ch; margin: 10px 0 24px; color: var(--text-muted); font-size: .8125rem; line-height: 1.8; }
 .local-only-label { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: .75rem; white-space: nowrap; }
 .local-only-label svg { width: 12px; height: 12px; }
-.agent-connections { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 15px; }
+.agent-connections { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 15px; }
 .agent-connection { min-width: 0; position: relative; padding: 20px 20px 0; border: 1px solid var(--border); border-radius: 14px; background: linear-gradient(155deg, color-mix(in srgb, var(--agent-color) 4%, transparent), transparent 70%), var(--surface-soft); transition: border-color .18s, box-shadow .18s; }
 .agent-connection.is-editing { border-color: color-mix(in srgb, var(--agent-color) 50%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent-color) 5%, transparent); }
 .connection-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
@@ -1113,3 +1113,16 @@ button:disabled { cursor: wait; opacity: .5; }
   .agent-filter-options { display: grid; grid-template-columns: repeat(2, 1fr); }
   .source-path-actions .primary-button { margin-left: 0; }
 }
+
+.workbuddy { --agent-color: #76bea3; }
+:root[data-theme="light"] .workbuddy { --agent-color: #227957; }
+.agent-connection { display: flex; flex-direction: column; }
+.connection-configure { margin-top: auto; }
+.connection-roots { margin-bottom: 8px; }
+.connection-roots .connection-path { margin-bottom: 10px; }
+.connection-path span i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 6px; background: var(--text-muted); opacity: .5; }
+.connection-path span i.root-detected { background: var(--agent-color); opacity: 1; }
+.source-ai-input { display: flex; gap: 8px; }
+.source-ai-input input { min-width: 0; flex: 1; }
+
+.source-path-editor > label + label { margin-top: 16px; }

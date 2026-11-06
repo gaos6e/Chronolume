@@ -103,6 +103,8 @@ fn setup(root: &Path) -> (Arc<UsageStore>, Arc<MultiAgentSource>, UsageIndexer) 
         claude: Some(root.join("claude").to_string_lossy().into()),
         opencode: Some(root.join("opencode").to_string_lossy().into()),
         dsh: Some(root.join("dsh").to_string_lossy().into()),
+        workbuddy: Some(root.join("workbuddy").to_string_lossy().into()),
+        workbuddy_ai: Some(root.join("workbuddy-ai").to_string_lossy().into()),
     }));
     let indexer = UsageIndexer::new(
         store.clone(),
@@ -1016,4 +1018,177 @@ fn model_alias_import_append_queries_and_exports_use_one_canonical_identity() {
         assert!(content.contains("gpt-6.1-sol"));
         assert!(!content.contains("gpt-6.1-sol-fast"));
     }
+}
+
+#[test]
+fn workbuddy_variants_merge_native_usage_skip_abnormal_calls_and_keep_missing_timing() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let time = Utc::now().timestamp_millis() - 120_000;
+    let first = root.join("workbuddy/projects/shared/native-session.jsonl");
+    let copy = root.join("workbuddy-ai/projects/shared/native-session.jsonl");
+    let sample = |id: &str, stamp: i64| {
+        json!({
+            "type":"function_call", "id":format!("row-{id}"), "timestamp":stamp,
+            "cwd":"C:/work/shared", "sessionId":"native-session", "callId":format!("call-{id}"), "name":"Read",
+            "arguments":SECRET, "content":SECRET,
+            "providerData":{"messageId":id,"model":"deepseek-v4.1-flash","requestModelId":"deepseek-v4.1-flash",
+                "usage":{"inputTokens":1000,"outputTokens":100,"inputTokensDetails":[{"cached_tokens":200}],"outputTokensDetails":[{"reasoning_tokens":30}]},
+                "rawUsage":{"prompt_tokens":1000,"completion_tokens":100,"prompt_cache_hit_tokens":200,"prompt_cache_miss_tokens":750,"prompt_cache_write_tokens":50,"credit":999999}},
+            "message":{"usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":200}}
+        })
+    };
+    let a = sample("a", time);
+    let mut repeated = a.clone();
+    repeated["id"] = json!("another-carrier");
+    let mut abnormal = sample("abnormal", time + 1000);
+    abnormal["status"] = json!("incomplete");
+    let mut failed_tool = json!({"type":"function_call_result","timestamp":time+1500,"callId":"call-a","status":"failed","output":SECRET});
+    failed_tool["cwd"] = json!("C:/work/shared");
+    write_lines(&first, &[a.clone(), repeated, abnormal, failed_tool]);
+    let mut b = sample("b", time + 60_000);
+    b["providerData"]["usage"]["inputTokensDetails"] = json!([{"cached_tokens":200}]);
+    write_lines(&copy, &[a, b]);
+    let database = Connection::open(root.join("workbuddy-ai/workbuddy.db")).unwrap();
+    database.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE sessions(id TEXT,cwd TEXT,created_at INTEGER,updated_at INTEGER,status TEXT,deleted_at INTEGER); CREATE TABLE session_usage(session_id TEXT, used INTEGER, size INTEGER, credit_json TEXT);").unwrap();
+    database
+        .execute(
+            "INSERT INTO sessions VALUES ('native-session','C:/work/shared',?1,?1,'archived',NULL)",
+            [time],
+        )
+        .unwrap();
+    database
+        .execute(
+            "INSERT INTO session_usage VALUES ('native-session',999999999,999999999,?1)",
+            [SECRET],
+        )
+        .unwrap();
+    let (store, source, indexer) = setup(root);
+    let result = indexer.sync(SyncMode::Initial).unwrap();
+    assert_eq!(result.parse_failures, 0);
+    let query = Arc::new(UsageQuery::new(store.clone(), chrono_tz::UTC));
+    let filters = list(Some("workbuddy")).filters;
+    let dashboard = query.dashboard(&filters).unwrap();
+    assert_eq!(dashboard.hero.real_total_tokens, 2200);
+    assert_eq!(dashboard.hero.cached_input_tokens, 400);
+    assert_eq!(dashboard.hero.cache_write_tokens, 100);
+    assert_eq!(dashboard.hero.reasoning_tokens, 60);
+    assert!(!dashboard.hero.active_timing_available);
+    assert_eq!(dashboard.hero.active_ms, 0);
+    let sessions = query.sessions(&list(Some("workbuddy"))).unwrap();
+    assert_eq!(sessions.total, 1);
+    assert_eq!(sessions.items[0].id, "workbuddy:native-session");
+    assert!(sessions.items[0].archived);
+    assert_eq!(sessions.items[0].tokens_per_second, None);
+    assert_eq!(sessions.items[0].average_first_token_latency_ms, None);
+    assert!(!sessions.items[0].active_timing_available);
+    assert!(!query.workspaces(&list(Some("workbuddy"))).unwrap().items[0].active_timing_available);
+    store
+        .with_reader(|c| {
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM usage_events WHERE agent='workbuddy'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                2
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM tool_events WHERE agent='workbuddy'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                1
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM activity_segments WHERE session_id LIKE 'workbuddy:%'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                0
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM sessions WHERE agent='codex'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        source
+            .plan(&store.source_checkpoints().unwrap())
+            .unwrap()
+            .changes
+            .len(),
+        0
+    );
+    let exporter = UsageExporter::new(query.clone());
+    for scope in [
+        ExportScope::Dashboard,
+        ExportScope::Sessions,
+        ExportScope::Workspaces,
+    ] {
+        let output = root.join("workbuddy-export.json");
+        exporter
+            .export_to_path(
+                &ExportRequest {
+                    scope,
+                    format: ExportFormat::Json,
+                    privacy: ExportPrivacy::FullPath,
+                    filters: filters.clone(),
+                },
+                output.to_str().unwrap(),
+            )
+            .unwrap();
+        let exported = fs::read_to_string(output).unwrap();
+        assert!(exported.contains("\"activeMs\": null"));
+        assert!(!exported.contains(SECRET));
+    }
+    fs::create_dir_all(root.join("opencode")).unwrap();
+    let other = opencode_db(&root.join("opencode/opencode.db"), time, false);
+    let mut timed = oc_message(time, 100);
+    timed["modelID"] = json!("deepseek-v4.1-flash");
+    timed["providerID"] = json!("deepseek");
+    timed["tokens"]["cache"]["write"] = json!(0);
+    other
+        .execute(
+            "INSERT INTO message VALUES ('oc-message','same-id',?1,?1,?2)",
+            params![time, timed.to_string()],
+        )
+        .unwrap();
+    indexer.sync(SyncMode::Incremental).unwrap();
+    let mut mixed = list(None);
+    mixed.filters.model = Some("deepseek-v4.1-flash".into());
+    assert_eq!(
+        query.models(&mixed).unwrap().items[0].average_tokens_per_second,
+        Some(105.0)
+    );
+    let mut file = fs::OpenOptions::new().append(true).open(&copy).unwrap();
+    write!(file, "{{\"type\":").unwrap();
+    let partial = indexer.sync(SyncMode::Incremental).unwrap();
+    assert_eq!(partial.parse_failures, 0);
+    assert_eq!(
+        query.dashboard(&filters).unwrap().hero.real_total_tokens,
+        2200
+    );
+    writeln!(file, "\"message\",\"id\":\"empty\"}}").unwrap();
+    writeln!(file, "{}", sample("c", time + 90_000)).unwrap();
+    indexer.sync(SyncMode::Incremental).unwrap();
+    assert_eq!(
+        query.dashboard(&filters).unwrap().hero.real_total_tokens,
+        3300
+    );
+    // A corrupted complete line rolls back this source instead of erasing its last snapshot.
+    writeln!(file, "not-json").unwrap();
+    indexer.sync(SyncMode::Incremental).unwrap();
+    assert_eq!(
+        query.dashboard(&filters).unwrap().hero.real_total_tokens,
+        3300
+    );
 }

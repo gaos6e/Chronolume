@@ -3,6 +3,9 @@ import { initReactI18next } from 'react-i18next';
 import { readLocalPreference, storageKeys } from './lib/storage';
 
 const english: Record<string, string> = {
+  '双版本会话与原生用量': 'Two desktop variants, native usage',
+  '两个版本合并展示；只统计原生用量，缺少原生计时显示为 —。': 'Both variants are combined. Only native usage is counted; unavailable native timing is shown as —.',
+
   "按请求 UTC 时间选择高峰或非高峰半价，含 2026 年中国节假日。": "Peak/off-peak rates follow UTC request time and the 2026 Chinese holiday calendar; off-peak is half price.",
   "标准文本价；2026-12-01 起按官网已公布的新价格计费。": "Standard text pricing; published new rates apply from December 1, 2026.",
   "标准文本价；2027-01-01 起按官网已公布的新价格计费。": "Standard text pricing; published new rates apply from January 1, 2027.",
@@ -77,7 +80,7 @@ const english: Record<string, string> = {
   "并行会话的活跃时间累加；缺少计时时不按墙钟外推。": "Parallel session durations are added together. Missing timings are not extrapolated from the wall clock.",
   "检查 OpenAI 更新": "Check OpenAI updates",
   "Anthropic 内置标准价快照：2026-10-26。缓存写入列为 5 分钟价格，原生 1 小时写入按输入价的 2 倍估算；不含快模式、区域或长上下文附加费。": "Anthropic standard-price snapshot: Oct 26, 2026. Cache writes show 5-minute rates; native 1-hour writes use 2× input rates. Fast-mode, regional, and long-context surcharges are excluded.",
-  "汇聚 Codex、Claude Code、OpenCode 与 DeepSeek Harness 的本地用量，照见你的工作节奏。": "Local insights across Codex, Claude Code, OpenCode, and DeepSeek Harness. Find the rhythm of your work.",
+  "汇聚 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 的本地用量，照见你的工作节奏。": "Local insights across Codex, Claude Code, OpenCode, DeepSeek Harness, and WorkBuddy. Find the rhythm of your work.",
   "正在检测本地 agent 数据源": "Detecting local agent sources",
   "暂无工作区。请先在桌面应用中同步 agent 数据。": "No workspaces yet. Sync agent data in the desktop app first.",
   "数据目录必须使用绝对路径": "Use an absolute data path",
@@ -180,7 +183,7 @@ const english: Record<string, string> = {
   '正在聚合每日活动…': 'Aggregating daily activity…', '少': 'Less', '多': 'More',
   '主题': 'Theme', '暗色、浅色或跟随系统': 'Dark, light, or follow the system', '系统': 'System',
   '暗色': 'Dark', '浅色': 'Light', '语言': 'Language', '界面语言偏好': 'Interface language',
-  '字体缩放': 'Font scale', 'Chronolume 汇总本机 Codex、Claude Code、OpenCode 与 DeepSeek Harness 的 Token、成本和时间。分析库不保存对话正文或工具参数，不访问在线配额；价格更新仅在主动触发时联网。': 'Chronolume brings together tokens, cost, and time from local Codex, Claude Code, OpenCode, and DeepSeek Harness activity. The analysis database stores no conversation content or tool arguments. Online quotas are never accessed; price updates connect only when explicitly requested.',
+  '字体缩放': 'Font scale', 'Chronolume 汇总本机 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 的 Token、成本和时间。分析库不保存对话正文或工具参数，不访问在线配额；价格更新仅在主动触发时联网。': 'Chronolume brings together tokens, cost, and time from local Codex, Claude Code, OpenCode, DeepSeek Harness, and WorkBuddy activity. The analysis database stores no conversation content or tool arguments. Online quotas are never accessed; price updates connect only when explicitly requested.',
   '最近活动': 'Recent activity', '成本': 'Cost', '名称': 'Name', '活跃': 'Active',
   '编辑工作区': 'Edit workspace', '没有匹配的工作区。': 'No matching workspaces.',
   '打开工作区统计': 'Open workspace analytics',

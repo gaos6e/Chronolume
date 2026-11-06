@@ -9,6 +9,7 @@ mod normalized;
 mod opencode;
 mod state_db;
 pub(crate) mod user_wait;
+mod workbuddy;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::Metadata;

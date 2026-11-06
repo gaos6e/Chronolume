@@ -26,6 +26,11 @@ const hero: HeroMetrics = {
 };
 
 describe('UsageHero', () => {
+  it('shows unavailable activity separately from zero duration', () => {
+    render(<UsageHero hero={{ ...hero, activeMs: 0, averageActiveMsPerDay: 0, activeTimingAvailable: false }} partial={false} />);
+    expect(screen.getAllByText('—')).toHaveLength(2);
+    expect(screen.queryByText('0m')).not.toBeInTheDocument();
+  });
   it('renders exact totals, cache rate, pricing and partial state without inventing values', () => {
     render(<UsageHero hero={hero} partial />);
     expect(screen.getByText('1,200')).toHaveAttribute('title', '1,200');

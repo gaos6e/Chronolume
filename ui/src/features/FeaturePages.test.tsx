@@ -8,6 +8,7 @@ import { DataPage } from './data/DataPage';
 import { ModelsPage } from './models/ModelsPage';
 import { ProjectsPage } from './projects/ProjectsPage';
 import { SessionsPage } from './sessions/SessionsPage';
+import { SourceConnections } from './data/SourceConnections';
 
 const api = vi.hoisted(() => ({
   getBootstrapStatus: vi.fn(),
@@ -51,11 +52,36 @@ function renderPage(node: React.ReactNode) {
 }
 
 describe('feature pages', () => {
+  it('configures both WorkBuddy roots and preserves them while editing another agent', async () => {
+    const sources = [
+      { agent: 'codex', path: 'C:/default/codex', customPath: 'D:/codex', available: true },
+      { agent: 'workbuddy', path: 'C:/default/workbuddy', available: true, roots: [
+        { settingKey: 'workbuddy', label: 'WorkBuddy', path: 'C:/default/workbuddy', available: false },
+        { settingKey: 'workbuddyAi', label: 'WorkBuddy AI', path: 'D:/wb-ai', customPath: 'D:/wb-ai', available: true },
+      ] },
+    ];
+    api.getSourceSettings.mockResolvedValue(sources);
+    api.saveSourceSettings.mockResolvedValue(sources);
+    const onSaved = vi.fn();
+    renderPage(<SourceConnections syncing={false} onSaved={onSaved} />);
+    await screen.findByText('D:/wb-ai');
+    const card = screen.getByRole('heading', { name: 'WorkBuddy' }).closest('article') as HTMLElement;
+    fireEvent.click(within(card).getByRole('button', { name: '配置目录' }));
+    fireEvent.change(screen.getByLabelText('WorkBuddy · 数据目录'), { target: { value: 'E:/wb' } });
+    fireEvent.change(screen.getByLabelText('WorkBuddy AI · 数据目录'), { target: { value: 'E:/wb-ai' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
+    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenCalledWith(expect.objectContaining({ codex: 'D:/codex', workbuddy: 'E:/wb', workbuddyAi: 'E:/wb-ai' })));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    const codex = screen.getByRole('heading', { name: 'Codex' }).closest('article') as HTMLElement;
+    fireEvent.click(within(codex).getByRole('button', { name: '配置目录' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
+    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ workbuddyAi: 'D:/wb-ai' })));
+  });
   it('filters official price rows and keeps the source link and zero rates visible', async () => {
     api.getModels.mockResolvedValue({ items: [], total: 0, page: 0, pageSize: 30 });
     api.listModelPrices.mockResolvedValue([
       {provider:'deepseek',pricingId:'deepseek-v4-pro',displayName:'DeepSeek V4 Pro',inputPerMillionUsd:'1.32',outputPerMillionUsd:'3.96',cacheReadPerMillionUsd:'0.044',isBuiltin:true,isDeleted:false,isOverridden:false,revision:1,sourceUrl:'https://api-docs.deepseek.com/quick_start/pricing/',pricingNote:'高峰价'},
-      {provider:'opencode',pricingId:'deepseek-v4.1-flash-free',displayName:'DeepSeek Free',inputPerMillionUsd:'0',outputPerMillionUsd:'0',cacheReadPerMillionUsd:'0',isBuiltin:true,isDeleted:false,isOverridden:false,revision:1,sourceUrl:'https://opencode.ai/v2/docs/console/models/'},
+      {provider:'opencode',pricingId:'glm-5.3-flash-free',displayName:'GLM Free',inputPerMillionUsd:'0',outputPerMillionUsd:'0',cacheReadPerMillionUsd:'0',isBuiltin:true,isDeleted:false,isOverridden:false,revision:1,sourceUrl:'https://opencode.ai/v2/docs/console/models/'},
     ]);
     renderPage(<ModelsPage filters={filters} />);
     fireEvent.click(screen.getByRole('tab', { name: '价格表' }));
@@ -63,7 +89,7 @@ describe('feature pages', () => {
     expect(screen.getAllByRole('link', { name: '官网价格' })[0]).toHaveAttribute('href','https://api-docs.deepseek.com/quick_start/pricing/');
     fireEvent.change(screen.getByRole('combobox',{name:'价格来源'}),{target:{value:'opencode'}});
     expect(screen.queryByText('DeepSeek V4 Pro')).not.toBeInTheDocument();
-    expect(screen.getByText('DeepSeek Free')).toBeInTheDocument();
+    expect(screen.getByText('GLM Free')).toBeInTheDocument();
     expect(screen.getAllByText('$0')).toHaveLength(3);
     fireEvent.change(screen.getByRole('searchbox',{name:'查找模型'}),{target:{value:'unlisted'}});
     expect(screen.getByText('没有匹配的价格。')).toBeInTheDocument();

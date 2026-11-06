@@ -24,7 +24,7 @@
   · <a href="#开发与构建">开发文档</a>
 </p>
 
-Chronolume 是为 **Codex、Claude Code、OpenCode 与 DeepSeek Harness 用户**打造的本地洞察应用。只读扫描各 agent 的本地记录，将活动整理成 Token、会话、活跃时间、模型、工具与成本趋势。无需登录，默认离线；首次建立索引，之后按来源增量同步。默认合并展示，可按 agent 筛选，同一工作区的投入统一汇总。
+Chronolume 是为 **Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 用户**打造的本地洞察应用。只读扫描各 agent 的本地记录，将活动整理成 Token、会话、活跃时间、模型、工具与成本趋势。无需登录，默认离线；首次建立索引，之后按来源增量同步。默认合并展示，可按 agent 筛选，同一工作区的投入统一汇总。
 
 支持 Claude Code 主会话与子 agent、OpenCode 旧 JSON 与多代 SQLite 存储、DeepSeek Harness JSONL/Zstandard 会话；可在数据页配置每个 agent 的数据目录。详细格式、计价与指标边界见 [agent 接入说明](docs/agents.md)。
 
@@ -48,7 +48,7 @@ Chronolume 是为 **Codex、Claude Code、OpenCode 与 DeepSeek Harness 用户**
 | **macOS Universal** · [测试候选](https://github.com/gaos6e/Chronolume/releases/latest) | 带 `unsigned` 的 `.app.zip` / `.dmg` 仅供测试；正式分发等待签名、公证与真机验收 |
 
 1. **下载安装**：Windows 选择安装器或便携版；macOS 候选版请先阅读[测试与分发说明](docs/packaging-macos.md)。
-2. **打开应用**：自动发现本机 Codex、Claude Code、OpenCode 与 DeepSeek Harness 数据，在后台建立分析索引，可查看进度、取消或续传。
+2. **打开应用**：自动发现本机 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 数据，在后台建立分析索引，可查看进度、取消或续传。
 3. **查看与导出**：选择 agent、时间范围、工作区、提供方、模型和会话状态，查看自己的使用图景，或导出 CSV、JSON 与趋势 PNG。
 
 无需改变原有 agent 工作方式。应用不会接管请求、读取账号凭据或查询在线配额。

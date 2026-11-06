@@ -215,6 +215,7 @@ fn parse_official_pricing(html: &str) -> AppResult<Vec<TrustedPriceRow>> {
 fn official_display_name(pricing_id: &str) -> String {
     match pricing_id {
         "gpt-6.1-sol" => "GPT-6.1 Sol".to_string(),
+        "gpt-6.1-terra" => "GPT-6.1 Terra".to_string(),
         "gpt-6-astra" => "GPT-6 Astra".to_string(),
         "gpt-6-sol" => "GPT-6 Sol".to_string(),
         "gpt-6-luna" => "GPT-6 Luna".to_string(),
@@ -290,6 +291,7 @@ mod tests {
     fn skips_incompatible_rows_without_swallowing_the_next_model() {
         let mut html =
             String::from(r#"[1,[[0,&quot;gpt-5.4-mini&quot;],[0,0.75],[0,0.075],[0,4.5]]]"#);
+        html.push_str(r#"[1,[[0,&quot;gpt-6.1-terra&quot;],[0,1],[0,0.05],[0,1.25],[0,5]]]"#);
         for model in [
             "gpt-6.1-sol",
             "gpt-6-astra",
@@ -304,8 +306,10 @@ mod tests {
                 "[1,[[0,&quot;{model}&quot;],[0,2],[0,0.1],[0,2.5],[0,10]]]"
             ));
         }
+        // The official page lists Standard first, followed by discounted tiers.
+        html.push_str(r#"[1,[[0,&quot;gpt-6.1-terra&quot;],[0,0.5],[0,0.025],[0,0.625],[0,2.5]]]"#);
         let rows = parse_official_pricing(&html).unwrap();
-        assert_eq!(rows.len(), 8);
+        assert_eq!(rows.len(), 9);
         assert!(rows.iter().all(|row| !row.pricing_id.contains('[')));
         assert!(rows.iter().all(|row| row.pricing_id != "gpt-5.4-mini"));
         let sol = rows
@@ -315,5 +319,14 @@ mod tests {
         assert_eq!(sol.display_name, "GPT-6.1 Sol");
         assert_eq!(sol.cache_read_per_million_usd, "0.1");
         assert_eq!(sol.cache_write_per_million_usd.as_deref(), Some("2.5"));
+        let terra = rows
+            .iter()
+            .find(|row| row.pricing_id == "gpt-6.1-terra")
+            .unwrap();
+        assert_eq!(terra.display_name, "GPT-6.1 Terra");
+        assert_eq!(terra.input_per_million_usd, "1");
+        assert_eq!(terra.output_per_million_usd, "5");
+        assert_eq!(terra.cache_read_per_million_usd, "0.05");
+        assert_eq!(terra.cache_write_per_million_usd.as_deref(), Some("1.25"));
     }
 }

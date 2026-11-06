@@ -13,11 +13,11 @@ const filters: UsageFilters = {
 };
 
 describe('cascadeFilter', () => {
-  it('selects DeepSeek Harness while retaining the workspace and clearing model filters', () => {
+  it.each([['DeepSeek Harness', 'dsh'], ['WorkBuddy', 'workbuddy']])('selects %s while retaining the workspace and clearing model filters', (label, agent) => {
     const onChange = vi.fn();
     render(<DashboardFilters filters={filters} refreshing={false} onChange={onChange} onRefresh={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'DeepSeek Harness' }));
-    expect(onChange).toHaveBeenCalledWith({ ...filters, agent: 'dsh', modelProvider: undefined, model: undefined });
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(onChange).toHaveBeenCalledWith({ ...filters, agent, modelProvider: undefined, model: undefined });
   });
   it('changes agents while keeping the workspace and resetting provider and model', () => {
     const onChange = vi.fn();

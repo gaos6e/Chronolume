@@ -48,6 +48,7 @@ export interface HeroMetrics {
   unpricedEventCount: number;
   sessionCount: number;
   activeMs: number;
+  activeTimingAvailable?: boolean;
   activeDays: number;
   averageTokensPerDay: number;
   averageCostMicrousdPerDay?: number;
@@ -72,6 +73,7 @@ export interface TrendPoint {
   unpricedEventCount: number;
   sessionCount: number;
   activeMs: number;
+  activeTimingAvailable?: boolean;
 }
 
 export interface FilterOption {
@@ -176,6 +178,7 @@ export interface WorkspaceRow {
   estimatedCostMicrousd?: number;
   unpricedEventCount: number;
   activeMs: number;
+  activeTimingAvailable?: boolean;
   activeDays: number;
   lastActivityAtMs?: number;
 }
@@ -193,6 +196,7 @@ export interface SessionRow {
   startedAtMs?: number;
   endedAtMs?: number;
   activeMs: number;
+  activeTimingAvailable?: boolean;
   activeMethod: string;
   activeIsEstimate: boolean;
   modelProvider: string;
@@ -242,6 +246,7 @@ export interface HeatmapPoint {
   sessionCount: number;
   totalTokens: number;
   activeMs: number;
+  activeTimingAvailable?: boolean;
 }
 
 export interface HeatmapSnapshot {
@@ -288,6 +293,7 @@ export interface ActivitySegmentRow {
   startedAtMs: number;
   endedAtMs: number;
   activeMs: number;
+  activeTimingAvailable?: boolean;
   method: string;
   isEstimate: boolean;
 }
@@ -452,10 +458,13 @@ export interface SourceSettings {
   claude?: string | null;
   opencode?: string | null;
   dsh?: string | null;
+  workbuddy?: string | null;
+  workbuddyAi?: string | null;
 }
 export interface AgentSourceSetting {
   agent: string;
   path: string;
   customPath?: string;
   available: boolean;
+  roots?: { settingKey: 'workbuddy' | 'workbuddyAi'; label: string; path: string; customPath?: string; available: boolean }[];
 }

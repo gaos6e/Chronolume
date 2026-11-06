@@ -42,6 +42,7 @@ pub struct ListQuery {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRow {
+    pub active_timing_available: bool,
     pub id: String,
     pub label: String,
     pub normalized_path: String,
@@ -66,6 +67,7 @@ pub struct WorkspaceCatalogItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRow {
+    pub active_timing_available: bool,
     pub agent: String,
     pub parent_session_id: Option<String>,
     pub cache_write_tokens: i64,
@@ -147,6 +149,7 @@ pub struct HeatmapQuery {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeatmapPoint {
+    pub active_timing_available: bool,
     pub date: String,
     pub value: i64,
     pub session_count: i64,
@@ -357,7 +360,7 @@ impl UsageQuery {
                         COUNT(DISTINCT d.session_id), SUM(d.total_tokens),
                         SUM(d.priced_cost_microusd), SUM(d.priced_event_count),
                         SUM(d.unpriced_event_count), SUM(d.active_ms),
-                        COUNT(DISTINCT d.local_date), MAX(d.last_activity_at_ms)
+                        COUNT(DISTINCT d.local_date), MAX(d.last_activity_at_ms), MAX(d.agent <> 'workbuddy' OR d.active_ms > 0)
                  FROM session_daily_usage d JOIN workspaces w ON w.id = d.workspace_id
                  WHERE {condition} GROUP BY w.id
                  ORDER BY {order} {direction}, w.id ASC LIMIT ? OFFSET ?"
@@ -370,6 +373,7 @@ impl UsageQuery {
                 .query_map(params_from_iter(paged_values.iter()), |row| {
                     let priced_events: i64 = row.get(7)?;
                     Ok(WorkspaceRow {
+                active_timing_available: row.get(12)?,
                         id: row.get(0)?,
                         label: row.get(1)?,
                         normalized_path: row.get(2)?,
@@ -546,6 +550,12 @@ impl UsageQuery {
                         SELECT l.*, s.workspace_id, s.archived
                         FROM session_turn_latencies l JOIN sessions s ON s.id = l.session_id
                     ) d WHERE {condition} GROUP BY d.model_raw
+                 ), timed_usage AS (
+                    SELECT d.*, SUM(d.active_ms) OVER (
+                        PARTITION BY d.session_id, d.local_date, d.timezone_id,
+                                     d.model_provider, d.model_raw, d.archived
+                    ) AS model_active_ms
+                    FROM session_daily_usage d WHERE {condition}
                  )
                  SELECT d.model_raw, NULLIF(MAX(d.pricing_model_id), ''),
                         COUNT(DISTINCT d.session_id), SUM(d.input_tokens),
@@ -554,8 +564,7 @@ impl UsageQuery {
                         SUM(d.priced_cost_microusd), SUM(d.priced_event_count),
                         SUM(d.unpriced_event_count), MAX(d.last_activity_at_ms),
                         {tps}, MAX(l.average_latency_ms), COALESCE(MAX(l.sample_count), 0), SUM(d.cache_write_tokens)
-                 FROM session_daily_usage d LEFT JOIN latency l ON l.model_raw = d.model_raw
-                 WHERE {condition}
+                 FROM timed_usage d LEFT JOIN latency l ON l.model_raw = d.model_raw
                  GROUP BY d.model_raw
                  ORDER BY {nulls_last}{order} {direction}, d.model_raw ASC LIMIT ? OFFSET ?",
                 tps = MODEL_TPS_SQL,
@@ -640,7 +649,7 @@ impl UsageQuery {
         let rows = self.store.with_reader(|connection| {
             let sql = format!(
                 "SELECT d.local_date, COUNT(DISTINCT d.session_id),
-                        SUM(d.total_tokens), SUM(d.active_ms)
+                        SUM(d.total_tokens), SUM(d.active_ms), MAX(d.agent <> 'workbuddy' OR d.active_ms > 0)
                  FROM session_daily_usage d WHERE {}
                  GROUP BY d.local_date ORDER BY d.local_date",
                 clauses.join(" AND ")
@@ -653,6 +662,7 @@ impl UsageQuery {
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, i64>(3)?,
+                        row.get::<_, bool>(4)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()
@@ -660,14 +670,16 @@ impl UsageQuery {
         })?;
         let by_date: BTreeMap<_, _> = rows
             .into_iter()
-            .map(|(date, sessions, tokens, active)| (date, (sessions, tokens, active)))
+            .map(|(date, sessions, tokens, active, available)| {
+                (date, (sessions, tokens, active, available))
+            })
             .collect();
         let mut points = Vec::new();
         let mut cursor = start;
         let mut max_value = 0_i64;
         while cursor <= today {
             let date = cursor.format("%Y-%m-%d").to_string();
-            let (session_count, total_tokens, active_ms) =
+            let (session_count, total_tokens, active_ms, active_timing_available) =
                 by_date.get(&date).copied().unwrap_or_default();
             let value = match query.metric {
                 HeatmapMetric::Sessions => session_count,
@@ -676,6 +688,7 @@ impl UsageQuery {
             };
             max_value = max_value.max(value);
             points.push(HeatmapPoint {
+                active_timing_available,
                 date,
                 value,
                 session_count,
@@ -1011,7 +1024,9 @@ const SESSION_LATENCY_JOIN_SQL: &str = "LEFT JOIN (
 
 // Usage totals retain untimed rows, but TPS and its sorting must use the same
 // timed subset for both numerator and denominator.
-const MODEL_TPS_SQL: &str = "CAST(SUM(CASE WHEN d.active_ms > 0 THEN d.output_tokens ELSE 0 END) AS REAL) \
+// Pricing brackets may split usage and timing into separate rows for the same
+// session/model/day. Eligibility follows that model's timing, not its price ID.
+const MODEL_TPS_SQL: &str = "CAST(SUM(CASE WHEN d.model_active_ms > 0 THEN d.output_tokens ELSE 0 END) AS REAL) \
                            * 1000.0 / NULLIF(SUM(d.active_ms), 0)";
 
 fn tokens_per_second(output_tokens: i64, active_ms: i64) -> Option<f64> {
@@ -1020,6 +1035,7 @@ fn tokens_per_second(output_tokens: i64, active_ms: i64) -> Option<f64> {
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
+        active_timing_available: row.get::<_, String>(7)? != "unknown",
         agent: row.get(23)?,
         parent_session_id: row.get(24)?,
         cache_write_tokens: row.get(25)?,

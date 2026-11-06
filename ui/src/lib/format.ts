@@ -24,7 +24,8 @@ export function formatCost(microusd?: number): string {
   return dollars < 0.01 ? `$${dollars.toFixed(4)}` : `$${dollars.toFixed(2)}`;
 }
 
-export function formatDuration(milliseconds: number): string {
+export function formatDuration(milliseconds: number | null | undefined): string {
+  if (milliseconds == null) return '—';
   const minutes = Math.round(milliseconds / 60_000);
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;

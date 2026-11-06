@@ -38,7 +38,7 @@ export function UsageHero({ hero, partial }: UsageHeroProps) {
         </div>
         <div className="hero-side-metrics">
           <div><MessageSquareText /><span>{t('会话')}</span><strong>{formatExact(hero.sessionCount)}</strong><em aria-hidden="true">&nbsp;</em></div>
-          <div><Activity /><span title={t('并行会话的活跃时间累加；缺少计时时不按墙钟外推。')}>{t('活跃时间')}</span><strong>{formatDuration(hero.activeMs)}</strong><em aria-hidden="true">&nbsp;</em></div>
+          <div><Activity /><span title={t('并行会话的活跃时间累加；缺少计时时不按墙钟外推。')}>{t('活跃时间')}</span><strong>{formatDuration(hero.activeTimingAvailable === false ? null : hero.activeMs)}</strong><em aria-hidden="true">&nbsp;</em></div>
           <div>
             <Coins />
             <span>{t('估算成本')}</span>
@@ -64,7 +64,7 @@ export function UsageHero({ hero, partial }: UsageHeroProps) {
         <AverageMetric icon={<Gauge />} label={t('日均 Token')} value={formatTokens(hero.averageTokensPerDay)} />
         <AverageMetric icon={<Coins />} label={t('日均成本')} value={formatCost(hero.averageCostMicrousdPerDay)} />
         <AverageMetric icon={<MessageSquareText />} label={t('日均会话')} value={hero.averageSessionsPerDay.toFixed(1)} />
-        <AverageMetric icon={<Activity />} label={t('日均活跃')} value={formatDuration(hero.averageActiveMsPerDay)} />
+        <AverageMetric icon={<Activity />} label={t('日均活跃')} value={formatDuration(hero.activeTimingAvailable === false ? null : hero.averageActiveMsPerDay)} />
         <AverageMetric icon={<CalendarCheck2 />} label={t('活跃天数')} value={formatExact(hero.activeDays)} />
         <AverageMetric className="peak-day-metric" icon={<Sparkles />} label={t('峰值日')} value={hero.peakDay ? `${hero.peakDay} · ${formatTokens(hero.peakDayTokens)}` : '—'} />
         <AverageMetric icon={<Flame />} label={t('最长连续活跃')} value={`${formatExact(hero.longestActiveStreakDays)} ${t('天')}`} />

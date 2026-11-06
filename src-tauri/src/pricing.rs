@@ -7,7 +7,7 @@ use std::str::FromStr;
 pub mod official;
 
 pub const OFFICIAL_PRICING_SOURCE: &str = "https://developers.openai.com/api/docs/pricing";
-pub const BUILTIN_PRICING_REVISION: i64 = 2_026_102_602;
+pub const BUILTIN_PRICING_REVISION: i64 = 2_026_102_701;
 pub const ANTHROPIC_PRICING_SOURCE: &str =
     "https://platform.claude.com/docs/en/about-claude/pricing";
 
@@ -60,6 +60,7 @@ pub struct PricingCatalog {
 pub fn builtin_model_prices() -> Vec<ModelPrice> {
     let mut prices: Vec<_> = [
         ("gpt-6.1-sol", "2", "10", "0.1", Some("2.5")),
+        ("gpt-6.1-terra", "1", "5", "0.05", Some("1.25")),
         ("gpt-6-astra", "10", "50", "1", Some("12.5")),
         ("gpt-6-sol", "2", "10", "0.2", Some("2.5")),
         ("gpt-6-luna", "0.1", "0.5", "0.01", Some("0.125")),
@@ -332,8 +333,8 @@ pub fn is_cost_excluded(_provider: &str, model: &str) -> bool {
     is_statistics_excluded_model(model)
 }
 
-/// Canonical identity for the explicitly unified Sol model. Other model names
-/// retain their existing identity, including unrelated Fast model variants.
+/// Unify explicitly confirmed model identities; unrelated suffixes retain their
+/// existing meaning, including other vendors' Fast and Free variants.
 pub fn canonical_model_name(raw: &str) -> String {
     let mut name = raw
         .trim()
@@ -347,8 +348,12 @@ pub fn canonical_model_name(raw: &str) -> String {
         name = base.to_string();
     }
     loop {
-        if matches!(name.as_str(), "gpt-6.1-sol" | "gpt-6.1-sol-fast") {
-            return "gpt-6.1-sol".into();
+        match name.as_str() {
+            "gpt-6.1-sol" | "gpt-6.1-sol-fast" => return "gpt-6.1-sol".into(),
+            "deepseek-v4.1-flash" | "deepseek-v4.1-flash-free" => {
+                return "deepseek-v4.1-flash".into();
+            }
+            _ => {}
         }
         let Some(next) = strip_iso_date_suffix(&name)
             .or_else(|| strip_compact_date_suffix(&name))
@@ -399,7 +404,7 @@ fn historical_tier_alias(value: &str) -> Option<String> {
 }
 
 /// 生成用于数据库名称排序的模型强度键。版本优先于同版本的强度层级，
-/// 因此降序稳定得到 6.1 Sol、6 Astra、6 Sol、6 Luna、5.6 Sol、5.6 Terra、
+/// 因此降序稳定得到 6.1 Sol、6.1 Terra、6 Astra、6 Sol、6 Luna、5.6 Sol、5.6 Terra、
 /// 5.6 Luna、5.5…。
 pub fn model_strength_sort_key(raw: &str) -> i64 {
     let normalized = normalize_model_id(raw).exact;
@@ -513,7 +518,13 @@ mod tests {
 
     #[test]
     fn preserves_dynamic_gpt_6_variants() {
-        for model in ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+        for model in [
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        ] {
             assert_eq!(normalize_model_id(model).exact, model);
         }
     }
@@ -522,6 +533,7 @@ mod tests {
     fn sorts_models_by_version_then_strength_tier() {
         let ordered = [
             "gpt-6.1-sol",
+            "gpt-6.1-terra",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -610,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn prices_gpt_6_1_sol_and_updated_gpt_5_6_rates() {
+    fn prices_gpt_6_1_models_and_updated_gpt_5_6_rates() {
         let catalog = PricingCatalog::new(builtin_model_prices());
         let tokens = PriceableTokens {
             cache_write_1h: 0,
@@ -621,6 +633,7 @@ mod tests {
         };
         for (model, expected_cost) in [
             ("gpt-6.1-sol", 14_600_000),
+            ("gpt-6.1-terra", 7_300_000),
             ("gpt-5.6-sol", 29_400_000),
             ("gpt-5.6-terra", 16_700_000),
             ("gpt-5.6-luna", 1_670_000),
@@ -640,6 +653,14 @@ mod tests {
         );
         assert_eq!(
             catalog.quote("openai", "gpt-6.1-sol-unknown", tokens),
+            PriceQuote::Unpriced
+        );
+        assert_eq!(
+            catalog.quote("custom", "OpenAI/GPT-6.1-TERRA-2026-10-26-high", tokens),
+            catalog.quote("openai", "gpt-6.1-terra", tokens)
+        );
+        assert_eq!(
+            catalog.quote("openai", "gpt-6.1-terra-unknown", tokens),
             PriceQuote::Unpriced
         );
     }
@@ -835,17 +856,41 @@ mod tests {
                 ..
             }
         ));
+        for provider in ["opencode", "deepseek", "gateway"] {
+            for time in ["2026-10-27T02:00:00Z", "2026-10-27T12:00:00Z"] {
+                assert_eq!(
+                    catalog.quote_at(
+                        provider,
+                        "deepseek-v4.1-flash-free",
+                        usage(1_000_000),
+                        at(time)
+                    ),
+                    catalog.quote_at(provider, "deepseek-v4.1-flash", usage(1_000_000), at(time))
+                );
+            }
+        }
         assert!(matches!(
             catalog.quote("opencode", "deepseek-v4.1-flash-free", usage(1_000_000)),
+            PriceQuote::Priced {
+                total_microusd: 300_000,
+                ..
+            }
+        ));
+        assert_eq!(
+            canonical_model_name("opencode/DeepSeek-V4.1-Flash-Free:high"),
+            "deepseek-v4.1-flash"
+        );
+        assert_eq!(
+            canonical_model_name("glm-5.3-flash-free"),
+            "glm-5.3-flash-free"
+        );
+        assert!(matches!(
+            catalog.quote("opencode", "glm-5.3-flash-free", usage(1_000_000)),
             PriceQuote::Priced {
                 total_microusd: 0,
                 ..
             }
         ));
-        assert_eq!(
-            catalog.quote("deepseek", "deepseek-v4.1-flash-free", usage(1_000_000)),
-            PriceQuote::Unpriced
-        );
         for (provider, id) in [
             ("custom", "gemini-3.8-flash"),
             ("google-vertex", "gemini-2.5-pro"),

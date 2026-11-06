@@ -1,6 +1,6 @@
 # Chronolume 2.1 功能边界
 
-Chronolume 是面向 Codex、Claude Code、OpenCode 与 DeepSeek Harness 的 Windows x64 与 macOS 12+ Universal 本地活动、用量与成本分析应用。它不实现代理、请求拦截、账号、多账号、在线配额、会话正文搜索、后台价格更新、遥测或应用自动更新。
+Chronolume 是面向 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 的 Windows x64 与 macOS 12+ Universal 本地活动、用量与成本分析应用。它不实现代理、请求拦截、账号、多账号、在线配额、会话正文搜索、后台价格更新、遥测或应用自动更新。
 
 已交付界面包括：
 

@@ -1,6 +1,6 @@
 # 支持的 coding agents
 
-Chronolume 将 Codex、Claude Code、OpenCode 和 DeepSeek Harness 的本地记录汇入同一分析库，默认合并展示。全局 agent 筛选与工作区、提供方、模型、时间及归档筛选共同作用于总览、项目、会话、模型、热力图、工具和导出。agent 是产生记录的客户端；提供方是模型/API 的路由来源，两者独立。
+Chronolume 将 Codex、Claude Code、OpenCode、DeepSeek Harness 和 WorkBuddy 的本地记录汇入同一分析库，默认合并展示。全局 agent 筛选与工作区、提供方、模型、时间及归档筛选共同作用于总览、项目、会话、模型、热力图、工具和导出。agent 是产生记录的客户端；提供方是模型/API 的路由来源，两者独立。
 
 ## 数据目录
 
@@ -10,6 +10,7 @@ Chronolume 将 Codex、Claude Code、OpenCode 和 DeepSeek Harness 的本地记�
 | Claude Code | `~/.claude` | 尊重 `CLAUDE_CONFIG_DIR`；读取 `projects/**/*.jsonl`，包括旧版平铺及嵌套 `subagents/agent-*.jsonl`；跳过编排 journal 和 orphaned 文件 |
 | OpenCode | `~/.local/share/opencode` | 尊重 `OPENCODE_DATA_DIR`、`XDG_DATA_HOME` 和 `OPENCODE_DB`；读取 `opencode.db`、`opencode-<channel>.db`，兼容 `session`/`session_v2` 元数据、`message/part` 与 `session_message` 表及旧 `storage/session`、`storage/message`、`storage/part` JSON |
 | DeepSeek Harness | `~/.dsh` | 尊重 `DSH_HOME`；读取 `sessions/<project>/<id>/session[.vN].jsonl[.zstd]`，支持 v0–v4 原始或 Zstandard 压缩日志，同一会话只读取最高规范代号文件 |
+| WorkBuddy / WorkBuddy AI | `~/.workbuddy`、`~/.workbuddy-ai` | 两个版本合并；读取 `projects/**/*.jsonl`，只读 `workbuddy.db` 补充会话元数据；两个根目录可分别配置 |
 
 Windows 的 `~` 是本机用户主目录，OpenCode 同样使用 `.local/share/opencode`，不套用 Windows 的 AppData 路径。`OPENCODE_DB` 可以是绝对路径或相对 OpenCode 数据目录的文件名；`:memory:` 会话无法从磁盘导入。
 
@@ -27,13 +28,13 @@ Windows 的 `~` 是本机用户主目录，OpenCode 同样使用 `.local/share/o
 
 ## 成本与价格
 
-内置价格按各品牌和渠道的官方页面维护，核对日期 **2026-10-26**，单位 USD / 1M Token。当前覆盖 OpenAI、Anthropic、DeepSeek、Google Gemini、Z.AI GLM、MiniMax、Kimi、Qwen、Grok，以及 OpenCode 已核对的专属/免费型号。完整型号、参考口径、档位和链接见 [官方价格说明](pricing.md)及应用价格表；未核验型号保持未定价。
+内置价格按各品牌和渠道的官方页面维护，基础快照核对日期 **2026-10-26**，**2026-10-27** 补充 OpenAI `gpt-6.1-terra`，单位 USD / 1M Token。当前覆盖 OpenAI、Anthropic、DeepSeek、Google Gemini、Z.AI GLM、MiniMax、Kimi、Qwen、Grok，以及 OpenCode 已核对的专属/免费型号。完整型号、参考口径、档位和链接见 [官方价格说明](pricing.md)及应用价格表；未核验型号保持未定价。
 
 匹配顺序为实际提供方的本地价格、已知提供方别名、模型所属品牌的精确官方参考价。渠道专属价格和用户覆盖优先。原始提供方和统计数量保持不变，已确认的模型别名规范为同一模型名称，渠道无独立配置时仅借用品牌参考价，不把它当作渠道账单。
 
 `gpt-6.1-sol` 的历史别名统一作为同一个模型：入库、筛选、会话详情、模型分组和导出使用同一名称；既有摘要通过 Schema 7 合并，保留 Token、成本、计时及永久摘要，不以别名创建独立型号。
 
-DeepSeek 直连按请求 UTC 时间选择峰谷价，并使用已核验的 2026 中国假日表；OpenCode 的 DeepSeek 免费型号为零价，付费渠道价独立。部分 Anthropic、Gemini、MiniMax、Qwen、Grok 型号按单次输入（新增 + 缓存读 + 缓存写）选择上下文档位。已公布的 Gemini 优惠结束日也按请求时间选择价格。档位保留在事件、模型片段和永久每日摘要的计价 ID（`@offpeak`、`@long`、`@regular`）中，事件过期后重算不再按汇总 Token 数重新选档。
+DeepSeek 直连按请求 UTC 时间选择峰谷价，并使用已核验的 2026 中国假日表；DeepSeek Flash 的历史免费路由别名按用户确认统一为 `deepseek-v4.1-flash`，沿用基础型号的正常价格，Schema 8 合并历史统计并重算费用。其他渠道价格仍独立。部分 Anthropic、Gemini、MiniMax、Qwen、Grok 型号按单次输入（新增 + 缓存读 + 缓存写）选择上下文档位。已公布的 Gemini 优惠结束日也按请求时间选择价格。档位保留在事件、模型片段和永久每日摘要的计价 ID（`@offpeak`、`@long`、`@regular`）中，事件过期后重算不再按汇总 Token 数重新选档。
 
 已有未保留请求档位的非 Codex 历史会话，会在这次价格升级后重放可访问的结构化来源；已不存在的历史源只保留标准参考估算，无法补造请求档位。Codex 继续使用既有标准短上下文参考口径。Anthropic 和 Kimi 的原生 1 小时缓存写入按输入价 2 倍计算；未识别缓存期限、路由区域、服务等级、音频单价、缓存存储时长和付费工具的记录不推造额外费用。
 
@@ -54,3 +55,16 @@ DeepSeek Harness 格式与去重口径依据[官方 session persistence](https:/
 2026-10-26 本机 DeepSeek Harness v0 验收：7 个会话、4,109,674 Token、70 次模型请求、112 次工具调用，与独立 Zstandard/JSON 复算逐会话一致；首次和重复同步无读取/解析错误，重复同步无变化，源文件 SHA-256 不变。v1–v4 仍以合成回归验证，未声称真实新版本或 macOS 真机验收。
 
 正式安装后的分析库另以当前目录独立复核 8 个逻辑会话（含新增空会话），同时覆盖真实 v0/v4 文件；总量仍为 4,109,674 Token、70 次请求、112 次工具调用，最新代际选择保持统计一致，旧源文件哈希保持不变。
+
+
+## WorkBuddy 与 WorkBuddy AI
+
+两个版本归为同一个 `workbuddy` agent，默认只读发现 `~/.workbuddy` 与 `~/.workbuddy-ai`，数据页可分别覆盖两个根目录。读取 `projects/**/*.jsonl`，通过 `workbuddy.db` 的会话元数据补充工作区、创建时间和归档状态；不读取凭据、积分账单、工具结果或对话正文。默认不接入独立 CodeBuddy 产品目录。
+
+`providerData.usage` 优先，其次 `rawUsage`，最后使用兼容的 `message.usage`；同一调用的多种表示不累加。输入总量已经包含缓存读写，新增输入扣除两者；推理是输出子项。原生消息标识去重调用，调用 ID 去重工具，复制到两个版本的同一会话合并统计。明确失败、取消、中断或不完整的记录跳过；同一会话此前完成的调用保留。缺失 Token 不按文本估算。
+
+trace 与 transcript 当前不能可靠关联，因此 trace 汇总和耗时不参与统计，WorkBuddy 不启用空闲间隔估时。缺失计时的活跃时长、TPS、TTFT 显示 `—`；接口返回 `activeTimingAvailable: false`，CSV 导出为空，JSON 导出对应计时为 `null`。混合统计只计已有时长，模型 TPS 不纳入无计时的输出。
+
+模型按记录中的原生 ID 匹配现有官方参考价和用户覆盖；不能确认的内部名称（例如 `hy4-preview-f`）保持未定价，积分不换算美元。工作区归并与其他 agent 一致，会话 ID 使用 `workbuddy:` 命名空间。当前真实样本来自 Windows WorkBuddy 5.5.6 和 WorkBuddy AI 5.9.4；macOS 仅由跨平台测试与构建验证，不等同于真机日志验收。
+
+2026-11-06 Windows 本机隔离验收：两版共 29 个会话、976 次原生调用、89,459,124 Token，与独立按原始 usage 复算的输入、缓存读写、输出和推理量逐型号一致。29 个来源首次同步无解析/读取错误，再次同步无变化；29 份 transcript 的 SHA-256 不变。原生活跃片段为零，未以消息间隔推算时长。

@@ -170,7 +170,10 @@ fn export_dashboard(format: ExportFormat, snapshot: DashboardSnapshot) -> AppRes
             optional_i64(hero.estimated_cost_microusd),
         ),
         ("session_count", hero.session_count.to_string()),
-        ("active_ms", hero.active_ms.to_string()),
+        (
+            "active_ms",
+            optional_i64(hero.active_timing_available.then_some(hero.active_ms)),
+        ),
         ("active_days", hero.active_days.to_string()),
         ("cache_write_tokens", hero.cache_write_tokens.to_string()),
     ] {
@@ -198,7 +201,7 @@ fn export_workspaces(format: ExportFormat, rows: Vec<WorkspaceRow>) -> AppResult
                 &row.session_count.to_string(),
                 &row.total_tokens.to_string(),
                 &optional_i64(row.estimated_cost_microusd),
-                &row.active_ms.to_string(),
+                &optional_i64(row.active_timing_available.then_some(row.active_ms)),
                 &row.active_days.to_string(),
                 &optional_i64(row.last_activity_at_ms),
             ],
@@ -225,7 +228,7 @@ fn export_sessions(format: ExportFormat, rows: Vec<SessionRow>) -> AppResult<Exp
                 &row.workspace_label,
                 &optional_i64(row.started_at_ms),
                 &optional_i64(row.ended_at_ms),
-                &row.active_ms.to_string(),
+                &optional_i64(row.active_timing_available.then_some(row.active_ms)),
                 &row.active_method,
                 &row.model_provider,
                 &row.latest_model,
@@ -319,10 +322,39 @@ fn json_output_with_count<T: Serialize>(value: Vec<T>) -> AppResult<ExportOutput
 }
 
 fn json_output(value: &impl Serialize, rows: usize) -> AppResult<ExportOutput> {
+    fn mark_missing_timing(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if object
+                    .get("activeTimingAvailable")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(false)
+                {
+                    for key in ["activeMs", "averageActiveMsPerDay"] {
+                        if let Some(value) = object.get_mut(key) {
+                            *value = serde_json::Value::Null;
+                        }
+                    }
+                }
+                for child in object.values_mut() {
+                    mark_missing_timing(child);
+                }
+            }
+            serde_json::Value::Array(array) => {
+                for child in array {
+                    mark_missing_timing(child);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut data = serde_json::to_value(value)
+        .map_err(|_| AppError::new("export_serialization_failed", "导出序列化失败"))?;
+    mark_missing_timing(&mut data);
     let envelope = json!({
         "exportedAtMs": Utc::now().timestamp_millis(),
         "privacyNotice": "No conversation content or tool arguments are included.",
-        "data": value,
+        "data": data,
     });
     Ok(ExportOutput {
         content: serde_json::to_string_pretty(&envelope)
@@ -392,6 +424,7 @@ mod tests {
     #[test]
     fn tps_exports_append_csv_columns_and_serialize_json_numbers_or_null() {
         let session = SessionRow {
+            active_timing_available: true,
             agent: "codex".into(),
             parent_session_id: None,
             cache_write_tokens: 0,
@@ -495,6 +528,7 @@ mod tests {
     #[test]
     fn anonymous_workspace_export_removes_names_and_paths() {
         let mut rows = vec![WorkspaceRow {
+            active_timing_available: true,
             id: "w1".into(),
             label: "secret-repo".into(),
             normalized_path: "C:/secret/repo".into(),

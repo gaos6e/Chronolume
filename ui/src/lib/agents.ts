@@ -3,6 +3,7 @@ export const agents = [
   { id: 'claude', label: 'Claude Code', detail: '会话、缓存与子 agent' },
   { id: 'opencode', label: 'OpenCode', detail: '多提供方会话与工具活动' },
   { id: 'dsh', label: 'DeepSeek Harness', detail: '原生用量、缓存与工作节奏' },
+  { id: 'workbuddy', label: 'WorkBuddy', detail: '双版本会话与原生用量' },
 ] as const;
 
 export type AgentId = typeof agents[number]['id'];

@@ -1403,6 +1403,11 @@ fn rebuild_fallback_activity(
     timezone: Tz,
     user_waits: &[TimeInterval],
 ) -> AppResult<()> {
+    // WorkBuddy transcripts have no attributable native timing. Never derive
+    // activity or TPS from the time between unrelated model requests.
+    if session_id.starts_with("workbuddy:") {
+        return Ok(());
+    }
     let earliest_detail: Option<i64> = transaction.query_row(
         "SELECT MIN(occurred_at_ms) FROM usage_events WHERE session_id = ?1",
         [session_id],

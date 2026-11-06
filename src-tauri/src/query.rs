@@ -80,6 +80,7 @@ pub struct ResolvedRangeDto {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeroMetrics {
+    pub active_timing_available: bool,
     pub cache_write_tokens: i64,
     pub real_total_tokens: i64,
     pub input_tokens: i64,
@@ -105,6 +106,7 @@ pub struct HeroMetrics {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrendPoint {
+    pub active_timing_available: bool,
     pub cache_write_tokens: i64,
     pub key: String,
     pub timestamp_ms: i64,
@@ -180,13 +182,39 @@ impl UsageQuery {
         hero.peak_day = activity_stats.peak_day;
         hero.peak_day_tokens = activity_stats.peak_tokens;
         hero.longest_active_streak_days = activity_stats.longest_streak_days;
-        let trend = if range.granularity == Granularity::Hour {
+        let mut trend = if range.granularity == Granularity::Hour {
             self.hourly_trend(filters, &range)?
         } else if boundary_detail_available {
             self.detail_daily_trend(filters, &range)?
         } else {
             self.rollup_trend(filters, &range)?
         };
+        let (condition, values) = rollup_conditions(filters, &range, "d");
+        let timing_by_date = self.store.with_reader(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT d.local_date, MAX(d.agent <> 'workbuddy' OR d.active_ms > 0) FROM session_daily_usage d WHERE {condition} GROUP BY d.local_date"
+            ))?;
+            statement.query_map(params_from_iter(values.iter()), |row| Ok((row.get::<_,String>(0)?, row.get::<_,bool>(1)?)))?
+                .collect::<Result<BTreeMap<_,_>,_>>().map_err(AppError::from)
+        })?;
+        hero.active_timing_available = timing_by_date.values().any(|available| *available);
+        for point in &mut trend {
+            // Weekly buckets can contain both timed and untimed days.
+            point.active_timing_available = if range.granularity == Granularity::Week {
+                let week = date_for_ms(point.timestamp_ms, self.timezone)?.iso_week();
+                timing_by_date.iter().any(|(day, available)| {
+                    *available
+                        && day
+                            .parse::<NaiveDate>()
+                            .is_ok_and(|date| date.iso_week() == week)
+                })
+            } else {
+                timing_by_date
+                    .get(&date_for_ms(point.timestamp_ms, self.timezone)?.to_string())
+                    .copied()
+                    .unwrap_or(false)
+            };
+        }
         let options = self.filter_options(filters, &range)?;
         let warning_sessions = self.warning_session_count(filters, &range)?;
         let state = if hero.session_count == 0 && hero.real_total_tokens == 0 {
@@ -453,6 +481,7 @@ impl UsageQuery {
                 let timestamp: i64 = row.get(0)?;
                 let priced: i64 = row.get(8)?;
                 Ok(TrendPoint {
+                    active_timing_available: true,
                     key: timestamp.to_string(),
                     timestamp_ms: timestamp,
                     input_tokens: row.get(1)?,
@@ -498,6 +527,7 @@ impl UsageQuery {
                 .query_map(params_from_iter(values.iter()), |row| {
                     let priced: i64 = row.get(9)?;
                     Ok(TrendPoint {
+                        active_timing_available: true,
                         key: row.get(0)?,
                         timestamp_ms: row.get(1)?,
                         input_tokens: row.get(2)?,
@@ -561,6 +591,7 @@ impl UsageQuery {
             let rows = statement.query_map(params_from_iter(values.iter()), |row| {
                 let priced: i64 = row.get(9)?;
                 Ok(TrendPoint {
+                    active_timing_available: true,
                     key: row.get(0)?,
                     timestamp_ms: row.get(1)?,
                     input_tokens: row.get(2)?,
@@ -850,6 +881,7 @@ fn hero_from_row(row: HeroRow, calendar_days: u64) -> HeroMetrics {
     let total = row.input.saturating_add(row.output);
     let cost = (row.priced_events > 0).then_some(row.cost.unwrap_or(0));
     HeroMetrics {
+        active_timing_available: true,
         cache_write_tokens: row.cache_write,
         real_total_tokens: total,
         input_tokens: row.input,
@@ -1040,6 +1072,7 @@ fn group_weekly(points: Vec<TrendPoint>, timezone: Tz) -> Vec<TrendPoint> {
         let entry = weeks
             .entry((week.year(), week.week()))
             .or_insert_with(|| TrendPoint {
+                active_timing_available: true,
                 key: format!("{}-W{:02}", week.year(), week.week()),
                 timestamp_ms: point.timestamp_ms,
                 input_tokens: 0,
