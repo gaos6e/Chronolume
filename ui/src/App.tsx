@@ -187,7 +187,7 @@ export function App() {
     void dashboard.refetch();
   };
   const pageCopy: Record<PageId, { eyebrow: string; title: string; description: string }> = {
-    overview: { eyebrow: 'CHRONOLUME · LOCAL FIRST', title: t('本地用量总览'), description: t('汇聚 Codex、Claude Code、OpenCode 与 DeepSeek Harness 的本地用量，照见你的工作节奏。') },
+    overview: { eyebrow: 'CHRONOLUME · LOCAL FIRST', title: t('本地用量总览'), description: t('汇聚 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 的本地用量，照见你的工作节奏。') },
     projects: { eyebrow: 'WORKSPACES', title: t('项目与工作区'), description: t('按真实工作区汇总 Token、成本、活跃时间和会话。') },
     sessions: { eyebrow: 'SESSIONS', title: t('会话与事件'), description: t('只显示结构化统计；最近 90 天 Token 事件由服务端分页保留。') },
     models: { eyebrow: 'MODELS & PRICING', title: t('模型与成本'), description: t('检查模型分布、未定价事件和本地价格覆盖。') },
