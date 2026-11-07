@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.3.2 — 2026-11-06
+
+- WorkBuddy 统一使用 WorkBuddy、WorkBuddy AI 和 CodeBuddy Code CLI 的原生会话记录，移除自定义 WorkBuddyProxy 的配置与日志导入。
+- 升级保留已有分析摘要，旧版导入且缺少缓存明细的历史继续排除在缓存命中率之外。
+
 ## 2.3.1 — 2026-11-06
 
 - 将 CodeBuddy Code CLI 并入 WorkBuddy，自动发现 `~/.codebuddy`，支持 `CODEBUDDY_CONFIG_DIR` 和独立目录覆盖。CLI 与桌面版的重复会话和调用合并统计。

@@ -87,7 +87,7 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
         <QueryStatus loading={models.isLoading && !models.data} refreshing={models.isFetching && Boolean(models.data)} error={models.error} onRetry={() => void models.refetch()} />
         {models.data && (
         <div className="data-table-wrap" role="region" aria-label={t('模型用量')} tabIndex={0} aria-busy={models.isFetching}><table className="data-table models-usage-table">
-          <thead><tr><th>{t('模型')}</th><th>{t('会话')}</th><th>{t('输入')}</th><th>{t('缓存')}</th><th>{t('输出')}</th><th>{t('推理')}</th><th title={tpsDescription}>{t('平均 TPS')}</th><th title={latencyDescription}>{t('平均首字延迟')}</th><th title={t('缺少缓存明细的代理记录不参与计算。')}>{t('命中率')}</th><th>{t('成本')}</th><th>{t('平均每百万 Token 成本')}</th><th>{t('最近使用')}</th></tr></thead>
+          <thead><tr><th>{t('模型')}</th><th>{t('会话')}</th><th>{t('输入')}</th><th>{t('缓存')}</th><th>{t('输出')}</th><th>{t('推理')}</th><th title={tpsDescription}>{t('平均 TPS')}</th><th title={latencyDescription}>{t('平均首字延迟')}</th><th title={t('缓存命中率仅使用有缓存明细的记录。')}>{t('命中率')}</th><th>{t('成本')}</th><th>{t('平均每百万 Token 成本')}</th><th>{t('最近使用')}</th></tr></thead>
           <tbody>{models.data?.items.map((model) => <tr key={model.model}>
             <td><strong>{model.model}</strong><small>{model.pricingModelId ? `${t('计价')} ${model.pricingModelId}` : t('未匹配价格')}</small></td>
             <td>{model.sessionCount.toLocaleString()}</td><td>{formatTokens(model.freshInputTokens)}</td>

@@ -10,7 +10,6 @@ mod opencode;
 mod state_db;
 pub(crate) mod user_wait;
 mod workbuddy;
-mod workbuddy_proxy;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::Metadata;
@@ -26,7 +25,6 @@ use crate::error::{AppError, AppResult};
 
 // Replay accessible logs to backfill native per-turn first-token latency.
 pub const PARSER_VERSION: i64 = 11;
-pub(crate) const WORKBUDDY_PROXY_SESSION_PREFIX: &str = "workbuddy:proxy:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

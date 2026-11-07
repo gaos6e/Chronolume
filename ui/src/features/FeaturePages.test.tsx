@@ -59,7 +59,6 @@ describe('feature pages', () => {
         { settingKey: 'workbuddy', label: 'WorkBuddy', path: 'C:/default/workbuddy', available: false },
         { settingKey: 'workbuddyAi', label: 'WorkBuddy AI', path: 'D:/wb-ai', customPath: 'D:/wb-ai', available: true },
         { settingKey: 'workbuddyCli', label: 'CodeBuddy Code CLI', path: 'C:/default/.codebuddy', available: false },
-        { settingKey: 'workbuddyProxy', label: 'WorkBuddyProxy', path: '', available: false },
       ] },
     ];
     api.getSourceSettings.mockResolvedValue(sources);
@@ -74,14 +73,13 @@ describe('feature pages', () => {
     fireEvent.change(screen.getByLabelText('WorkBuddy · 数据目录'), { target: { value: 'E:/workbuddy' } });
     fireEvent.change(screen.getByLabelText('WorkBuddy AI · 数据目录'), { target: { value: 'E:/workbuddyAi' } });
     fireEvent.change(screen.getByLabelText('CodeBuddy Code CLI · 数据目录'), { target: { value: 'E:/workbuddyCli' } });
-    fireEvent.change(screen.getByLabelText('WorkBuddyProxy · 日志目录'), { target: { value: 'E:/workbuddyProxy' } });
     fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
-    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenCalledWith(expect.objectContaining({ codex: 'D:/codex', workbuddy: 'E:/workbuddy', workbuddyAi: 'E:/workbuddyAi', workbuddyCli: 'E:/workbuddyCli', workbuddyProxy: 'E:/workbuddyProxy' })));
+    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenCalledWith(expect.objectContaining({ codex: 'D:/codex', workbuddy: 'E:/workbuddy', workbuddyAi: 'E:/workbuddyAi', workbuddyCli: 'E:/workbuddyCli' })));
     await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
     const codex = screen.getByRole('heading', { name: 'Codex' }).closest('article') as HTMLElement;
     fireEvent.click(within(codex).getByRole('button', { name: '配置目录' }));
     fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
-    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ workbuddyCli: 'E:/workbuddyCli', workbuddyProxy: 'E:/workbuddyProxy' })));
+    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ workbuddyCli: 'E:/workbuddyCli' })));
   });
   it('filters official price rows and keeps the source link and zero rates visible', async () => {
     api.getModels.mockResolvedValue({ items: [], total: 0, page: 0, pageSize: 30 });

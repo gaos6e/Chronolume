@@ -1,7 +1,7 @@
 {
   "name": "chronolume",
   "productName": "Chronolume",
-  "version": "2.3.1",
+  "version": "2.3.2",
   "description": "Private, offline-first insights into Codex, Claude Code, OpenCode, DeepSeek Harness, and WorkBuddy activity, usage, and cost.",
   "private": true,
   "scripts": {

@@ -106,7 +106,6 @@ fn setup(root: &Path) -> (Arc<UsageStore>, Arc<MultiAgentSource>, UsageIndexer) 
         workbuddy: Some(root.join("workbuddy").to_string_lossy().into()),
         workbuddy_ai: Some(root.join("workbuddy-ai").to_string_lossy().into()),
         workbuddy_cli: Some(root.join("codebuddy-cli").to_string_lossy().into()),
-        workbuddy_proxy: Some(root.join("proxy/logs").to_string_lossy().into()),
     }));
     let indexer = UsageIndexer::new(
         store.clone(),
@@ -1253,127 +1252,96 @@ fn codebuddy_cli_transcripts_share_workbuddy_identity_with_desktop_copies() {
 }
 
 #[test]
-fn workbuddy_proxy_imports_only_dated_successes_and_deduplicates_request_ids() {
+fn retired_proxy_settings_and_logs_do_not_affect_native_import_or_legacy_summaries() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    let log_root = root.join("proxy/logs");
-    let timestamp = Utc::now().to_rfc3339();
-    let first = json!({"event":"completion","request_id":"first","time":timestamp,
-        "model":"hy4free","input_tokens":400,"output_tokens":60,"seconds":99,"tool_calls":2,"result":SECRET});
-    let second = json!({"event":"completion","request_id":"second","time":timestamp,
-        "input_tokens":200,"output_tokens":40});
-    let invalid = json!({"event":"completion","input_tokens":100_000,"output_tokens":20});
-    let error = json!({"event":"request_error","request_id":"failed","time":timestamp,
-        "input_tokens":100_000,"output_tokens":20});
-    let first_log = log_root.join("proxy-20261105-010101.stdout.log");
-    let second_log = log_root.join("proxy-20261106-010101.stdout.log");
-    write_lines(
-        &first_log,
-        &[first.clone(), first.clone(), invalid.clone(), error],
-    );
-    write_lines(&second_log, &[first.clone(), second, invalid.clone()]);
-    write_lines(
-        &log_root.join("proxy-20261107-010101.stdout.log"),
-        &[invalid],
-    );
-    write_lines(&log_root.join("proxy-20261106-010101.stderr.log"), &[first]);
+    let timestamp = (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
     let (store, source, indexer) = setup(root);
-    let initial = indexer.sync(SyncMode::Initial).unwrap();
-    assert_eq!(
-        (
-            initial.files_total,
-            initial.file_errors,
-            initial.parse_failures
-        ),
-        (3, 0, 0)
+    let log_root = root.join("proxy/logs");
+    let mut saved_settings = serde_json::to_value(source.settings()).unwrap();
+    saved_settings["workbuddyProxy"] = json!(log_root);
+    let settings: SourceSettings = serde_json::from_value(saved_settings).unwrap();
+    assert!(
+        serde_json::to_value(&settings)
+            .unwrap()
+            .get("workbuddyProxy")
+            .is_none()
     );
-    let query = UsageQuery::new(store.clone(), chrono_tz::UTC);
-    let filters = filters(Some("workbuddy"));
-    let snapshot = query.dashboard(&filters).unwrap();
-    assert_eq!(snapshot.hero.real_total_tokens, 700);
-    assert_eq!(snapshot.hero.session_count, 2);
-    assert_eq!(snapshot.hero.cache_hit_rate, None);
-    assert!(!snapshot.hero.active_timing_available);
-    assert_eq!(snapshot.hero.estimated_cost_microusd, None);
-    assert_eq!(snapshot.hero.unpriced_event_count, 2);
-    assert!(query.tools(&filters).unwrap().top_tools.is_empty());
-    store
-        .with_reader(|connection| {
-            assert_eq!(
-                connection.query_row(
-                    "SELECT COUNT(*) FROM usage_events WHERE agent = 'workbuddy'",
-                    [],
-                    |row| row.get::<_, i64>(0)
-                )?,
-                2
-            );
-            assert_eq!(
-                connection.query_row(
-                    "SELECT COUNT(*) FROM sessions WHERE agent = 'workbuddy'",
-                    [],
-                    |row| row.get::<_, i64>(0)
-                )?,
-                2
-            );
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().files_total, 0);
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .open(second_log)
-        .unwrap();
-    let third = json!({"event":"completion","request_id":"third","time":timestamp,
-        "model":"proxy-only-model","input_tokens":15,"output_tokens":5});
-    writeln!(file, "{third}").unwrap();
-    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().file_errors, 0);
     assert_eq!(
-        query.dashboard(&filters).unwrap().hero.real_total_tokens,
-        720
+        settings
+            .describe()
+            .unwrap()
+            .iter()
+            .find(|s| s.agent == "workbuddy")
+            .unwrap()
+            .roots
+            .len(),
+        3
     );
-    let mut settings = source.settings();
-    settings.workbuddy_proxy = None;
     source.configure(settings);
-    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().file_errors, 0);
-    assert_eq!(
-        query.dashboard(&filters).unwrap().hero.real_total_tokens,
-        720
-    );
-
-    let cli_usage = |id, model, cached| {
-        json!({
-            "id":id, "sessionId":"cli-session", "timestamp":timestamp,
-            "type":"message", "status":"completed", "cwd":"C:/work/shared",
-            "providerData":{"messageId":id, "requestModelId":model, "usage":{
-                "inputTokens":100, "outputTokens":10, "inputTokensDetails":[{"cached_tokens":cached}]
-            }}, "message":{"role":"assistant","content":SECRET}
-        })
-    };
     write_lines(
-        &root.join("codebuddy-cli/projects/project/cli-session.jsonl"),
+        &log_root.join("proxy-20261106-010101.stdout.log"),
         &[
-            cli_usage("cache-hit", "hy4free", 40),
-            cli_usage("zero-hits", "other-model", 0),
+            json!({"event":"completion","request_id":"retired","time":timestamp,
+                 "input_tokens":999999,"output_tokens":999999}),
         ],
     );
-    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().file_errors, 0);
-    for preset in [RangePreset::Last24Hours, RangePreset::Last7Days] {
-        let mut range_filters = filters.clone();
-        range_filters.range.preset = preset;
-        let hero = query.dashboard(&range_filters).unwrap().hero;
-        assert_eq!(hero.real_total_tokens, 940);
-        assert_eq!(hero.cache_hit_rate, Some(0.2));
+    write_lines(
+        &root.join("codebuddy-cli/projects/project/cli-session.jsonl"),
+        &[json!({
+            "id":"native", "timestamp":timestamp, "type":"message", "status":"completed",
+            "cwd":"C:/work/shared", "providerData":{"messageId":"native","requestModelId":"test-model",
+            "usage":{"inputTokens":1000,"outputTokens":200,"inputTokensDetails":[{"cached_tokens":300}]}},
+            "message":{"role":"assistant","content":SECRET}
+        })],
+    );
+    let initial = indexer.sync(SyncMode::Initial).unwrap();
+    assert_eq!((initial.files_total, initial.file_errors), (1, 0));
+
+    // Existing 2.3.1 history is a permanent summary after its source is retired.
+    store.with_writer(|transaction| {
+        transaction.execute(
+            "INSERT INTO source_files(source_key,relative_path,source_kind,session_id,parser_version,status)
+             VALUES ('workbuddy:proxy:retired','proxy/retired.stdout.log','session','workbuddy:proxy:retired',11,'ready')", [],
+        )?;
+        transaction.execute(
+            "INSERT INTO sessions(id,source_file_id,workspace_id,synthetic_title,parser_version,updated_at_ms,
+                model_provider,latest_model_raw,primary_model_raw,input_tokens,fresh_input_tokens,total_tokens)
+             SELECT 'workbuddy:proxy:retired',
+                (SELECT id FROM source_files WHERE source_key='workbuddy:proxy:retired'),
+                workspace_id,'Legacy history',11,0,'workbuddy','test-model','test-model',500,500,500
+             FROM sessions WHERE id='workbuddy:cli-session'", [],
+        )?;
+        transaction.execute(
+            "INSERT INTO session_daily_usage(session_id,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,
+                workspace_id,model_provider,model_raw,pricing_model_id,archived,input_tokens,fresh_input_tokens,
+                total_tokens,unpriced_event_count,last_activity_at_ms)
+             SELECT 'workbuddy:proxy:retired',local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,
+                workspace_id,model_provider,model_raw,pricing_model_id,archived,500,500,500,1,last_activity_at_ms
+             FROM session_daily_usage WHERE session_id='workbuddy:cli-session'", [],
+        )?;
+        transaction.execute(
+            "INSERT INTO usage_events(event_key,source_file_id,session_id,byte_offset,event_ordinal,
+                occurred_at_ms,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,model_provider,model_raw,
+                input_tokens,fresh_input_tokens,cached_input_tokens,output_tokens,reasoning_tokens,total_tokens)
+             SELECT 'retired-history',(SELECT id FROM source_files WHERE source_key='workbuddy:proxy:retired'),
+                'workbuddy:proxy:retired',1,1,occurred_at_ms,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,
+                model_provider,model_raw,500,500,0,0,0,500 FROM usage_events WHERE session_id='workbuddy:cli-session'", [],
+        )?;
+        Ok(())
+    }).unwrap();
+    for _ in 0..2 {
+        assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().file_errors, 0);
+        let query = UsageQuery::new(store.clone(), chrono_tz::UTC);
+        for preset in [RangePreset::Last24Hours, RangePreset::Last7Days] {
+            let mut selected = filters(Some("workbuddy"));
+            selected.range.preset = preset;
+            let snapshot = query.dashboard(&selected).unwrap();
+            assert_eq!(snapshot.hero.real_total_tokens, 1700);
+            assert_eq!(snapshot.hero.cache_hit_rate, Some(0.3));
+        }
+        let models = query.models(&list(Some("workbuddy"))).unwrap();
+        assert_eq!(models.items[0].total_tokens, 1700);
+        assert_eq!(models.items[0].cache_hit_rate, Some(0.3));
     }
-    let models = query.models(&list(Some("workbuddy"))).unwrap();
-    let rate = |name| {
-        models
-            .items
-            .iter()
-            .find(|row| row.model == name)
-            .unwrap()
-            .cache_hit_rate
-    };
-    assert_eq!(rate("hy4free"), Some(0.4));
-    assert_eq!(rate("other-model"), Some(0.0));
-    assert_eq!(rate("proxy-only-model"), None);
 }

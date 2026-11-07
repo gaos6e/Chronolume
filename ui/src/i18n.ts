@@ -4,9 +4,7 @@ import { readLocalPreference, storageKeys } from './lib/storage';
 
 const english: Record<string, string> = {
   '桌面版与 CLI 的原生用量': 'Native usage from desktop and CLI',
-  '桌面版、CLI 和已配置的代理日志合并展示。代理只统计有时间及用量的成功请求，留空则不启用。': 'Desktop, CLI, and configured proxy logs are combined. Proxy usage includes successful requests with timestamps and usage. Leave the directory blank to disable proxy import.',
-  '日志目录': 'Log directory',
-  '选择日志目录': 'Choose a log directory',
+  '三个来源合并展示，只统计原生会话记录中的用量。缺少原生计时显示为 —。': 'The three sources are combined using usage from native session records. Missing native timing is shown as —.',
   '暂无记录': 'No records yet',
 
   "按请求 UTC 时间选择高峰或非高峰半价，含 2026 年中国节假日。": "Peak/off-peak rates follow UTC request time and the 2026 Chinese holiday calendar; off-peak is half price.",
@@ -161,7 +159,7 @@ const english: Record<string, string> = {
   '估算成本': 'Estimated cost', '部分未定价': 'Partially unpriced', '含未定价事件': 'Contains unpriced events',
   '新增输入': 'Fresh input', '输出': 'Output', '缓存读取': 'Cache read', '推理': 'Reasoning',
   '缓存命中率': 'Cache hit rate', '日均 Token': 'Daily avg tokens', '日均成本': 'Daily avg cost',
-  '缺少缓存明细的代理记录不参与计算。': 'Proxy records without cache details are excluded.',
+  '缓存命中率仅使用有缓存明细的记录。': 'Cache hit rate uses records with cache details.',
   '峰值日': 'Peak day', '最长连续活跃': 'Longest active streak', '天': 'days',
   '日均会话': 'Daily avg sessions', '日均活跃': 'Daily avg active', '活跃天数': 'Active days',
   '趋势': 'Trend', 'Token 与成本': 'Tokens & cost', '趋势序列': 'Trend series',

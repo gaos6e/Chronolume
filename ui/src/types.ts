@@ -461,7 +461,6 @@ export interface SourceSettings {
   workbuddy?: string | null;
   workbuddyAi?: string | null;
   workbuddyCli?: string | null;
-  workbuddyProxy?: string | null;
 }
 export interface AgentSourceSetting {
   agent: string;

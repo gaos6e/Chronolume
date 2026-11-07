@@ -25,7 +25,6 @@ pub struct SourceSettings {
     pub workbuddy: Option<String>,
     pub workbuddy_ai: Option<String>,
     pub workbuddy_cli: Option<String>,
-    pub workbuddy_proxy: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,7 +58,6 @@ impl SourceSettings {
             &mut self.workbuddy,
             &mut self.workbuddy_ai,
             &mut self.workbuddy_cli,
-            &mut self.workbuddy_proxy,
         ] {
             *value = value
                 .take()
@@ -157,7 +155,7 @@ impl SourceSettings {
                 }
                 .clone();
                 let roots = if agent == "workbuddy" {
-                    let mut roots = [
+                    [
                         ("workbuddy", "WorkBuddy", &self.workbuddy),
                         ("workbuddyAi", "WorkBuddy AI", &self.workbuddy_ai),
                         ("workbuddyCli", "CodeBuddy Code CLI", &self.workbuddy_cli),
@@ -173,17 +171,7 @@ impl SourceSettings {
                             custom_path: custom.clone(),
                         })
                     })
-                    .collect::<AppResult<Vec<_>>>()?;
-                    let proxy = self.workbuddy_proxy.as_deref();
-                    roots.push(AgentSourceRoot {
-                        setting_key: "workbuddyProxy".into(),
-                        label: "WorkBuddyProxy".into(),
-                        path: proxy.unwrap_or_default().into(),
-                        custom_path: self.workbuddy_proxy.clone(),
-                        available: proxy
-                            .is_some_and(|path| super::workbuddy_proxy::has_logs(Path::new(path))),
-                    });
-                    roots
+                    .collect::<AppResult<Vec<_>>>()?
                 } else {
                     Vec::new()
                 };
@@ -251,14 +239,6 @@ impl MultiAgentSource {
             match discovery {
                 Ok(changes) => plan.changes.extend(changes),
                 Err(error) => plan.source_errors.push((agent.into(), error.code)),
-            }
-        }
-        if let Some(path) = &settings.workbuddy_proxy {
-            match super::workbuddy_proxy::discover(Path::new(path)) {
-                Ok(changes) => plan.changes.extend(changes),
-                Err(error) => plan
-                    .source_errors
-                    .push(("workbuddy:proxy".into(), error.code)),
             }
         }
         Ok(plan)
@@ -384,11 +364,6 @@ impl UsageSource for MultiAgentSource {
             super::opencode::stream(change, sink, cancel)
         } else if change.source_key.starts_with("dsh:") {
             super::dsh::stream(change, sink, cancel)
-        } else if change
-            .source_key
-            .starts_with(super::WORKBUDDY_PROXY_SESSION_PREFIX)
-        {
-            super::workbuddy_proxy::stream(change, sink, cancel)
         } else if change.source_key.starts_with("workbuddy:") {
             let settings = self.settings();
             super::workbuddy::stream(change, &settings.workbuddy_paths()?, sink, cancel)

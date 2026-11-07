@@ -8,7 +8,6 @@ use rusqlite::types::Value as SqlValue;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
-use crate::source::WORKBUDDY_PROXY_SESSION_PREFIX;
 use crate::store::UsageStore;
 
 mod analytics;
@@ -867,10 +866,9 @@ impl ResolvedRange {
 }
 
 fn cache_hit_rate_sql(alias: &str) -> String {
-    // Proxy logs preserve input/output counts but omit cache details. Their
-    // session namespace also identifies older imports after detail retention.
-    let has_cache_stats =
-        format!("{alias}.session_id NOT GLOB '{WORKBUDDY_PROXY_SESSION_PREFIX}*'");
+    // 2.3.1 could import proxy history without cache details. Keep those
+    // existing summaries out of the rate after retiring that importer.
+    let has_cache_stats = format!("{alias}.session_id NOT GLOB 'workbuddy:proxy:*'");
     format!(
         "CAST(SUM({alias}.cached_input_tokens) FILTER (WHERE {has_cache_stats}) AS REAL) /
          NULLIF(SUM({alias}.input_tokens) FILTER (WHERE {has_cache_stats}), 0)"
