@@ -377,7 +377,7 @@ export interface ModelPriceRecord {
   displayName: string;
   inputPerMillionUsd: string;
   outputPerMillionUsd: string;
-  cacheReadPerMillionUsd: string;
+  cacheReadPerMillionUsd: string | null;
   cacheWritePerMillionUsd?: string;
   isBuiltin: boolean;
   isOverridden: boolean;
@@ -395,9 +395,8 @@ export type ModelPriceInput = Pick<
   | 'displayName'
   | 'inputPerMillionUsd'
   | 'outputPerMillionUsd'
-  | 'cacheReadPerMillionUsd'
   | 'cacheWritePerMillionUsd'
->;
+> & { cacheReadPerMillionUsd: string };
 
 export interface PricingMutationResult {
   prices: ModelPriceRecord[];

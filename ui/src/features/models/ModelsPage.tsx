@@ -27,7 +27,7 @@ const EMPTY_PRICE: ModelPriceInput = {
 };
 const PRICE_PROVIDERS: Record<string, string> = {
   openai: 'OpenAI', anthropic: 'Anthropic', deepseek: 'DeepSeek', google: 'Google Gemini',
-  zai: 'Z.AI · GLM', minimax: 'MiniMax', moonshotai: 'Kimi', alibaba: 'Qwen', xai: 'Grok', opencode: 'OpenCode',
+  zai: 'Z.AI · GLM', minimax: 'MiniMax', moonshotai: 'Kimi', alibaba: 'Qwen', xai: 'Grok', opencode: 'OpenCode', tencent: 'Tencent Hunyuan',
 };
 
 export function ModelsPage({ filters }: { filters: UsageFilters }) {
@@ -123,14 +123,14 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
           <thead><tr><th>{t('计价 ID')}</th><th>{t('输入')}</th><th>{t('缓存读')}</th><th>{t('缓存写')}</th><th>{t('输出')}</th><th>{t('来源')}</th><th><span className="sr-only">{t('操作')}</span></th></tr></thead>
           <tbody>{visiblePrices?.map((price) => <tr key={`${price.provider}-${price.pricingId}`} className={price.isDeleted ? 'deleted-row' : ''}>
             <td><strong>{price.displayName}</strong><small>{price.provider} / {price.pricingId}</small></td>
-            <td>${price.inputPerMillionUsd}</td><td>${price.cacheReadPerMillionUsd}</td>
+            <td>${price.inputPerMillionUsd}</td><td>{price.cacheReadPerMillionUsd == null ? 'N/A' : `$${price.cacheReadPerMillionUsd}`}</td>
             <td>{price.cacheWritePerMillionUsd ? `$${price.cacheWritePerMillionUsd}` : 'N/A'}</td><td>${price.outputPerMillionUsd}</td>
             <td className="price-provenance">{price.sourceUrl && price.isBuiltin ? <a href={price.sourceUrl} target="_blank" rel="noreferrer">{t('官网价格')}</a> : price.isBuiltin ? t('内置官方快照') : t('用户价格')}{price.sourceUpdatedAtMs && <small>{new Date(price.sourceUpdatedAtMs).toLocaleDateString(undefined, { timeZone: 'UTC' })}</small>}{price.pricingNote && !price.isOverridden && <small>{t(price.pricingNote)}</small>}{price.isDeleted && <small className="warning-copy">{t('已删除')}</small>}{price.isOverridden && <small>{t('已覆盖')}</small>}{price.pricingId === 'gpt-5.5' && <small>{t('标准价适用于不超过 272K 输入')}</small>}</td>
             <td><div className="row-actions">
               {!price.isDeleted && <button type="button" className="icon-button" disabled={busy} aria-label={t('编辑价格')} onClick={() => openEditor({
                 provider: price.provider, pricingId: price.pricingId, displayName: price.displayName,
                 inputPerMillionUsd: price.inputPerMillionUsd, outputPerMillionUsd: price.outputPerMillionUsd,
-                cacheReadPerMillionUsd: price.cacheReadPerMillionUsd, cacheWritePerMillionUsd: price.cacheWritePerMillionUsd,
+                cacheReadPerMillionUsd: price.cacheReadPerMillionUsd ?? '', cacheWritePerMillionUsd: price.cacheWritePerMillionUsd,
               })}><Pencil /></button>}
               {!price.isDeleted && <button type="button" className="icon-button danger" disabled={busy} aria-label={t('删除价格')} onClick={() => { resetFeedback(); remove.mutate(price); }}><Trash2 /></button>}
               {price.isBuiltin && (price.isDeleted || price.isOverridden) && <button type="button" className="icon-button" disabled={busy} aria-label={t('恢复内置价格')} onClick={() => { resetFeedback(); restore.mutate(price); }}><RotateCcw /></button>}

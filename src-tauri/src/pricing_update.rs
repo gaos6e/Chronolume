@@ -110,14 +110,16 @@ impl PriceUpdateService {
         for row in &rows {
             let before = current_by_id
                 .get(row.pricing_id.as_str())
-                .map(|price| TrustedPriceRow {
-                    provider: price.provider.clone(),
-                    pricing_id: price.pricing_id.clone(),
-                    display_name: price.display_name.clone(),
-                    input_per_million_usd: price.input_per_million_usd.clone(),
-                    output_per_million_usd: price.output_per_million_usd.clone(),
-                    cache_read_per_million_usd: price.cache_read_per_million_usd.clone(),
-                    cache_write_per_million_usd: price.cache_write_per_million_usd.clone(),
+                .and_then(|price| {
+                    Some(TrustedPriceRow {
+                        provider: price.provider.clone(),
+                        pricing_id: price.pricing_id.clone(),
+                        display_name: price.display_name.clone(),
+                        input_per_million_usd: price.input_per_million_usd.clone(),
+                        output_per_million_usd: price.output_per_million_usd.clone(),
+                        cache_read_per_million_usd: price.cache_read_per_million_usd.clone()?,
+                        cache_write_per_million_usd: price.cache_write_per_million_usd.clone(),
+                    })
                 });
             if before.as_ref().is_some_and(|value| same_prices(value, row)) {
                 unchanged_count += 1;
@@ -212,8 +214,13 @@ fn parse_official_pricing(html: &str) -> AppResult<Vec<TrustedPriceRow>> {
     Ok(rows.into_values().collect())
 }
 
-fn official_display_name(pricing_id: &str) -> String {
+pub(crate) fn official_display_name(pricing_id: &str) -> String {
     match pricing_id {
+        "gpt-6.2-astra" => "GPT-6.2 Astra".to_string(),
+        "gpt-6.2-sol" => "GPT-6.2 Sol".to_string(),
+        "gpt-6.2-astra-law" => "GPT-6.2 Astra for Law".to_string(),
+        "gpt-6-cyber" => "GPT-6 Cyber".to_string(),
+        "gpt-6-rosalind" => "GPT-6 Rosalind".to_string(),
         "gpt-6.1-sol" => "GPT-6.1 Sol".to_string(),
         "gpt-6.1-terra" => "GPT-6.1 Terra".to_string(),
         "gpt-6-astra" => "GPT-6 Astra".to_string(),

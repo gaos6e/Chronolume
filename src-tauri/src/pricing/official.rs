@@ -11,7 +11,7 @@ use super::{BUILTIN_PRICING_REVISION, ModelPrice, PriceableTokens};
 pub(super) struct Rates {
     input: String,
     output: String,
-    read: String,
+    read: Option<String>,
     write: Option<String>,
 }
 #[derive(Deserialize)]
@@ -33,6 +33,7 @@ pub(super) struct OfficialModel {
     pub source_url: String,
     pub note: String,
     pub aliases: Vec<String>,
+    checked_on: Option<String>,
     rates: Rates,
     pub tiers: Vec<Tier>,
 }
@@ -73,7 +74,12 @@ pub(super) fn prices() -> Vec<ModelPrice> {
                 pricing_id: id,
                 input_per_million_usd: rates.input.parse().expect("official input price"),
                 output_per_million_usd: rates.output.parse().expect("official output price"),
-                cache_read_per_million_usd: rates.read.parse().expect("official cached price"),
+                cache_read_per_million_usd: rates
+                    .read
+                    .as_deref()
+                    .unwrap_or("0")
+                    .parse()
+                    .expect("official cached price"),
                 cache_write_per_million_usd: rates
                     .write
                     .as_ref()
@@ -149,6 +155,32 @@ pub fn price_source(provider: &str, id: &str) -> &'static str {
     model(provider, id).map_or_else(|| source(provider), |model| model.source_url.as_str())
 }
 
+pub fn cache_read_known(provider: &str, id: &str) -> bool {
+    model(provider, id).is_none_or(|model| {
+        id.split_once('@')
+            .and_then(|(_, suffix)| model.tiers.iter().find(|tier| tier.suffix == suffix))
+            .map_or(&model.rates, |tier| &tier.rates)
+            .read
+            .is_some()
+    })
+}
+
+pub fn snapshot_ms(provider: &str, id: &str) -> i64 {
+    let date = model(provider, id)
+        .and_then(|model| model.checked_on.as_deref())
+        .unwrap_or(if provider == "openai" {
+            "2026-10-27"
+        } else {
+            "2026-10-26"
+        });
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .expect("pricing snapshot date")
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight")
+        .and_utc()
+        .timestamp_millis()
+}
+
 pub fn description(provider: &str, id: &str) -> Option<String> {
     let model = model(provider, id)?;
     let bracket = id
@@ -184,6 +216,8 @@ pub(super) fn vendor(id: &str) -> Option<&'static str> {
         Some("alibaba")
     } else if id.starts_with("grok-") {
         Some("xai")
+    } else if id == "hy4-flash" {
+        Some("tencent")
     } else {
         None
     }

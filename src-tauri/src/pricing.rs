@@ -7,7 +7,7 @@ use std::str::FromStr;
 pub mod official;
 
 pub const OFFICIAL_PRICING_SOURCE: &str = "https://developers.openai.com/api/docs/pricing";
-pub const BUILTIN_PRICING_REVISION: i64 = 2_026_102_701;
+pub const BUILTIN_PRICING_REVISION: i64 = 2_026_111_701;
 pub const ANTHROPIC_PRICING_SOURCE: &str =
     "https://platform.claude.com/docs/en/about-claude/pricing";
 
@@ -276,6 +276,9 @@ impl PricingCatalog {
             }
         }
         if tokens.cache_write_1h > tokens.cache_write
+            || (tokens.cached_input > 0
+                && !overridden
+                && !official::cache_read_known(&price.provider, &price.pricing_id))
             || (tokens.cache_write_1h > 0
                 && !matches!(price.provider.as_str(), "anthropic" | "moonshotai"))
             || (tokens.cache_write > 0 && price.cache_write_per_million_usd.is_none())
@@ -947,6 +950,8 @@ mod tests {
     fn context_brackets_and_announced_price_changes_are_preserved_in_summaries() {
         let catalog = PricingCatalog::new(builtin_model_prices());
         for (provider, id, threshold, lower, upper) in [
+            ("openai", "gpt-6.2-astra", 272001, 8.0, 16.0),
+            ("openai", "gpt-6.2-sol", 272001, 2.0, 4.0),
             ("google", "gemini-2.5-pro", 200001, 1.25, 2.5),
             ("minimax", "minimax-m3", 512001, 0.3, 0.6),
             ("alibaba", "qwen3.7-plus", 256001, 0.4, 1.2),
@@ -991,6 +996,66 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn newly_announced_price_cutovers_use_request_time() {
+        let catalog = PricingCatalog::new(builtin_model_prices());
+        for (provider, model, before, after, initial, regular) in [
+            (
+                "google",
+                "gemini-4-carbon",
+                "2026-11-30T23:59:59Z",
+                "2026-12-01T00:00:00Z",
+                2_000_000,
+                4_000_000,
+            ),
+            (
+                "workbuddy",
+                "hy4-flash",
+                "2026-11-30T03:59:59Z",
+                "2026-11-30T04:00:00Z",
+                35_000,
+                70_000,
+            ),
+        ] {
+            for (time, id, cost) in [
+                (before, model.to_string(), initial),
+                (after, format!("{model}@regular"), regular),
+            ] {
+                assert_eq!(
+                    catalog.quote_at(provider, model, usage(1_000_000), at(time)),
+                    PriceQuote::Priced {
+                        pricing_id: id,
+                        revision: BUILTIN_PRICING_REVISION,
+                        total_microusd: cost,
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decisions_without_a_cache_rate_price_only_observed_uncached_input() {
+        let catalog = PricingCatalog::new(builtin_model_prices());
+        assert!(matches!(
+            catalog.quote("google", "gemini-decision-1", usage(1_000_000)),
+            PriceQuote::Priced {
+                total_microusd: 100_000,
+                ..
+            }
+        ));
+        assert_eq!(
+            catalog.quote(
+                "google",
+                "gemini-decision-1",
+                PriceableTokens {
+                    cached_input: 1,
+                    ..usage(1_000_000)
+                }
+            ),
+            PriceQuote::Unpriced
+        );
     }
 
     #[test]

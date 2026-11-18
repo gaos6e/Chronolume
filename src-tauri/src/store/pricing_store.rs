@@ -12,20 +12,13 @@ use crate::pricing::{
     BUILTIN_PRICING_REVISION, ModelPrice, OFFICIAL_PRICING_SOURCE, PriceQuote, PriceableTokens,
     PricingCatalog, builtin_model_prices, canonical_model_provider,
 };
-use crate::pricing_update::TrustedPriceRow;
+use crate::pricing_update::{TrustedPriceRow, official_display_name};
 
 fn builtin_display_name(pricing_id: &str) -> String {
     if let Some((base, bracket)) = pricing_id.split_once('@') {
         return format!("{} · {}", base, bracket);
     }
-    match pricing_id {
-        "gpt-6.1-sol" => "GPT-6.1 Sol".to_string(),
-        "gpt-6.1-terra" => "GPT-6.1 Terra".to_string(),
-        "gpt-6-astra" => "GPT-6 Astra".to_string(),
-        "gpt-6-sol" => "GPT-6 Sol".to_string(),
-        "gpt-6-luna" => "GPT-6 Luna".to_string(),
-        _ => pricing_id.to_string(),
-    }
+    official_display_name(pricing_id)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,7 +29,7 @@ pub struct ModelPriceRecord {
     pub display_name: String,
     pub input_per_million_usd: String,
     pub output_per_million_usd: String,
-    pub cache_read_per_million_usd: String,
+    pub cache_read_per_million_usd: Option<String>,
     pub cache_write_per_million_usd: Option<String>,
     pub is_builtin: bool,
     pub is_overridden: bool,
@@ -190,7 +183,9 @@ impl UsageStore {
                         is_builtin = 1, revision = MAX(model_prices.revision, excluded.revision),
                         source_url = excluded.source_url,
                         source_updated_at_ms = excluded.source_updated_at_ms,
-                        updated_at_ms = excluded.updated_at_ms",
+                        updated_at_ms = excluded.updated_at_ms
+                     WHERE model_prices.source_updated_at_ms IS NULL
+                        OR model_prices.source_updated_at_ms <= excluded.source_updated_at_ms",
                     params![
                         price.pricing_id,
                         price.provider,
@@ -201,7 +196,7 @@ impl UsageStore {
                         cache_write,
                         BUILTIN_PRICING_REVISION,
                         crate::pricing::official::price_source(&price.provider, &price.pricing_id),
-                        if price.provider != "openai" { chrono::DateTime::parse_from_rfc3339("2026-10-26T00:00:00Z").expect("snapshot date").timestamp_millis() } else { official_snapshot_ms() },
+                        crate::pricing::official::snapshot_ms(&price.provider, &price.pricing_id),
                         Utc::now().timestamp_millis(),
                     ],
                 )?;
@@ -231,20 +226,26 @@ impl UsageStore {
             };
             let mut statement = connection.prepare(sql)?;
             let rows = statement.query_map([], |row| {
+                let provider: String = row.get(0)?;
+                let pricing_id: String = row.get(1)?;
+                let is_builtin = row.get::<_, i64>(7)? != 0;
+                let is_overridden = row.get::<_, i64>(8)? != 0;
+                let cache_read_per_million_usd = (!is_builtin
+                    || is_overridden
+                    || crate::pricing::official::cache_read_known(&provider, &pricing_id))
+                .then(|| row.get(5))
+                .transpose()?;
                 Ok(ModelPriceRecord {
-                    pricing_note: crate::pricing::official::description(
-                        &row.get::<_, String>(0)?,
-                        &row.get::<_, String>(1)?,
-                    ),
-                    provider: row.get(0)?,
-                    pricing_id: row.get(1)?,
+                    pricing_note: crate::pricing::official::description(&provider, &pricing_id),
+                    provider,
+                    pricing_id,
                     display_name: row.get(2)?,
                     input_per_million_usd: row.get(3)?,
                     output_per_million_usd: row.get(4)?,
-                    cache_read_per_million_usd: row.get(5)?,
+                    cache_read_per_million_usd,
                     cache_write_per_million_usd: row.get(6)?,
-                    is_builtin: row.get::<_, i64>(7)? != 0,
-                    is_overridden: row.get::<_, i64>(8)? != 0,
+                    is_builtin,
+                    is_overridden,
                     is_deleted: row.get::<_, i64>(9)? != 0,
                     revision: row.get(10)?,
                     source_url: row.get(11)?,
@@ -270,7 +271,12 @@ impl UsageStore {
                     pricing_id: record.pricing_id,
                     input_per_million_usd: parse_price(&record.input_per_million_usd)?,
                     output_per_million_usd: parse_price(&record.output_per_million_usd)?,
-                    cache_read_per_million_usd: parse_price(&record.cache_read_per_million_usd)?,
+                    cache_read_per_million_usd: record
+                        .cache_read_per_million_usd
+                        .as_deref()
+                        .map(parse_price)
+                        .transpose()?
+                        .unwrap_or(Decimal::ZERO),
                     cache_write_per_million_usd: record
                         .cache_write_per_million_usd
                         .as_deref()
@@ -705,12 +711,6 @@ fn nonnegative(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or(0)
 }
 
-fn official_snapshot_ms() -> i64 {
-    chrono::DateTime::parse_from_rfc3339("2026-10-27T00:00:00Z")
-        .expect("OpenAI snapshot date")
-        .timestamp_millis()
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicBool;
@@ -725,21 +725,16 @@ mod tests {
         let store = UsageStore::open_in_memory().unwrap();
         store.seed_builtin_prices().unwrap();
         let prices = store.model_prices(false).unwrap();
-        assert_eq!(
-            prices
-                .iter()
-                .take(6)
-                .map(|price| price.pricing_id.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "gpt-6.1-sol",
-                "gpt-6.1-terra",
-                "gpt-6-astra",
-                "gpt-6-sol",
-                "gpt-6-luna",
-                "gpt-5.6-sol"
-            ]
-        );
+        for (id, name, input, output) in [
+            ("gpt-6.2-astra", "GPT-6.2 Astra", "8", "40"),
+            ("gpt-6.2-sol", "GPT-6.2 Sol", "2", "10"),
+        ] {
+            let price = prices.iter().find(|price| price.pricing_id == id).unwrap();
+            assert_eq!(price.display_name, name);
+            assert_eq!(price.input_per_million_usd, input);
+            assert_eq!(price.output_per_million_usd, output);
+            assert!(price.is_builtin);
+        }
         let sol_61 = prices
             .iter()
             .find(|price| price.pricing_id == "gpt-6.1-sol")
@@ -747,7 +742,7 @@ mod tests {
         assert_eq!(sol_61.display_name, "GPT-6.1 Sol");
         assert_eq!(sol_61.input_per_million_usd, "2");
         assert_eq!(sol_61.output_per_million_usd, "10");
-        assert_eq!(sol_61.cache_read_per_million_usd, "0.1");
+        assert_eq!(sol_61.cache_read_per_million_usd.as_deref(), Some("0.1"));
         assert_eq!(sol_61.cache_write_per_million_usd.as_deref(), Some("2.5"));
         assert_eq!(sol_61.source_updated_at_ms, Some(1_793_059_200_000));
         let terra_61 = prices
@@ -757,7 +752,7 @@ mod tests {
         assert_eq!(terra_61.display_name, "GPT-6.1 Terra");
         assert_eq!(terra_61.input_per_million_usd, "1");
         assert_eq!(terra_61.output_per_million_usd, "5");
-        assert_eq!(terra_61.cache_read_per_million_usd, "0.05");
+        assert_eq!(terra_61.cache_read_per_million_usd.as_deref(), Some("0.05"));
         assert_eq!(
             terra_61.cache_write_per_million_usd.as_deref(),
             Some("1.25")
@@ -775,7 +770,7 @@ mod tests {
         assert_eq!(astra.display_name, "GPT-6 Astra");
         assert_eq!(astra.input_per_million_usd, "10");
         assert_eq!(astra.output_per_million_usd, "50");
-        assert_eq!(astra.cache_read_per_million_usd, "1");
+        assert_eq!(astra.cache_read_per_million_usd.as_deref(), Some("1"));
         assert_eq!(astra.cache_write_per_million_usd.as_deref(), Some("12.5"));
         let sol = prices
             .iter()
@@ -784,7 +779,7 @@ mod tests {
         assert_eq!(sol.display_name, "GPT-6 Sol");
         assert_eq!(sol.input_per_million_usd, "2");
         assert_eq!(sol.output_per_million_usd, "10");
-        assert_eq!(sol.cache_read_per_million_usd, "0.2");
+        assert_eq!(sol.cache_read_per_million_usd.as_deref(), Some("0.2"));
         assert_eq!(sol.cache_write_per_million_usd.as_deref(), Some("2.5"));
         let luna = prices
             .iter()
@@ -793,14 +788,17 @@ mod tests {
         assert_eq!(luna.display_name, "GPT-6 Luna");
         assert_eq!(luna.input_per_million_usd, "0.1");
         assert_eq!(luna.output_per_million_usd, "0.5");
-        assert_eq!(luna.cache_read_per_million_usd, "0.01");
+        assert_eq!(luna.cache_read_per_million_usd.as_deref(), Some("0.01"));
         assert_eq!(luna.cache_write_per_million_usd.as_deref(), Some("0.125"));
         let legacy_sol = prices
             .iter()
             .find(|price| price.pricing_id == "gpt-5.6-sol")
             .unwrap();
         assert_eq!(legacy_sol.input_per_million_usd, "4");
-        assert_eq!(legacy_sol.cache_read_per_million_usd, "0.4");
+        assert_eq!(
+            legacy_sol.cache_read_per_million_usd.as_deref(),
+            Some("0.4")
+        );
         assert_eq!(legacy_sol.cache_write_per_million_usd.as_deref(), Some("5"));
         assert_eq!(legacy_sol.output_per_million_usd, "20");
         assert_eq!(

@@ -1,11 +1,12 @@
 # 官方参考价格
 
-核对日期：OpenAI 新模型补充于 2026-10-27，其余快照为 2026-10-26。价格单位为 USD / 百万 Token。`src-tauri/src/pricing.rs` 保留 OpenAI 与 Anthropic 基础表，`src-tauri/src/pricing/official-prices.json` 保存其他品牌、补充档位、别名和逐型号来源。
+核对日期：OpenAI 新模型补充于 2026-10-27，基础快照为 2026-10-26。2026-11-17 更新覆盖 OpenAI、Anthropic、Google、阿里云和腾讯混元。价格单位为 USD / 百万 Token。`src-tauri/src/pricing.rs` 保留 OpenAI 与 Anthropic 基础表，`src-tauri/src/pricing/official-prices.json` 保存其他品牌、补充档位、别名和逐型号来源。
 
 | 品牌／渠道 | 官方来源 | 口径 |
 | --- | --- | --- |
 | OpenAI | [模型与价格](https://developers.openai.com/api/docs/pricing)、[GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra) | 标准短上下文价；`gpt-6.1-terra`：输入 $1、缓存读 $0.05、30 分钟缓存写入 $1.25、输出 $5；`gpt-6.1-sol`（含已统一的历史别名）：输入 $2、缓存读 $0.10、写 $2.50、输出 $10 |
 | Anthropic | [Pricing](https://platform.claude.com/docs/en/about-claude/pricing) | 标准全球 API；Haiku 5.5 >100K 与 Sonnet 4.5 >200K 档位；5 分钟缓存写入 1.25 倍输入，1 小时为 2 倍 |
+| 2026-11-17 补充 | [OpenAI](https://developers.openai.com/api/docs/pricing)、[Anthropic](https://platform.claude.com/docs/en/about-claude/pricing)、[Google](https://aistudio.google.com/docs/pricing)、[Qwen](https://www.alibabacloud.com/help/en/model-studio/model-pricing)、[腾讯混元](https://www.tencentcloud.com/document/product/1300/78937) | 收录 GPT‑6.2 Astra、Sol、Astra for Law，GPT‑6 Cyber、Rosalind，Claude Fable 5.2、Mythos 5.2，Gemini 4 Carbon、Hydrogen、Gemini Decision 1，Qwen4‑Max 和 Hy4 Flash。 |
 | DeepSeek | [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/) | Pro 高峰输入 $1.32／缓存读 $0.044／输出 $3.96；Flash $0.30／$0.006／$1.20；非高峰减半 |
 | Gemini | [Developer API pricing](https://ai.google.dev/gemini-api/docs/pricing) | 标准付费文本；Pro >200K 档位，已公布 Argon 2026-12-01、3.6/3.8 Flash 2027-01-01 新价 |
 | GLM | [Z.AI pricing](https://docs.z.ai/guides/overview/pricing) | 官网美元 Token 价，明确免费型号为零 |
@@ -14,6 +15,8 @@
 | Qwen | [Model Studio pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing)、[缓存](https://www.alibabacloud.com/help/en/model-studio/context-cache) | 新加坡 International 标准价；Plus >256K 档位；3.8 Flash 缓存专属价。Qwen3.8 Max 直连区分显式与隐式缓存，现有日志不能可靠识别，暂不套用单一缓存价；OpenCode 已发布的该型号渠道价单独支持 |
 | Grok | [API pricing](https://docs.x.ai/developers/pricing) | 全球标准价；单次输入 ≥200K 为长上下文档位，不推断 US 区域附加费 |
 | OpenCode | [Console models](https://opencode.ai/v2/docs/console/models/) | 显式收录核验过的渠道价格和免费型号；不把任意 `-free` 后缀推广为其他渠道零价 |
+
+GPT‑6.2 Astra、Sol 和 GPT‑6 Cyber 以 272,000 输入 Token 为短上下文上限。GPT‑6.2 缓存写入采用 30 分钟参考价。GPT‑6 Cyber 长上下文的缓存写入单价待核验。Gemini 4 Carbon 于 2026-12-01 切换到正式价。Hy4 Flash 在北京时间 2026-11-30 12:00 恢复目录价。Qwen4‑Max 采用新加坡国际部署价格与 5 分钟缓存写入价。
 
 DeepSeek 高峰为周一至周五 UTC 01:00–04:00、06:00–10:00；其余时段及中国公共假期为非高峰。假期依据[国务院 2026 年通知（政府门户转载）](https://www.beijing.gov.cn/cs/gncs/zcwj/202603/t20260327_4568275.html)。当前假日快照仅覆盖 2026 年，其他年份只应用周几和时段规则，更新版本应补充新年假日。
 

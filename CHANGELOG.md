@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.3 — 2026-11-17
+
+- 新增 12 个模型和 17 条价格记录，覆盖 OpenAI、Anthropic、Google、阿里云和腾讯混元。
+- 补充 GPT‑6.2 Astra、Sol 和 GPT‑6 Cyber 的长上下文档位，按请求时间处理 Gemini 4 Carbon 和 Hy4 Flash 的已公布价格切换。
+- 升级后自动为已有用量补算成本并保留用户价格覆盖。Gemini Decision 1 的缓存读价显示为不可用。详情见 [官方参考价格](docs/pricing.md)。
+
 ## 2.3.2 — 2026-11-06
 
 - WorkBuddy 统一使用 WorkBuddy、WorkBuddy AI 和 CodeBuddy Code CLI 的原生会话记录，移除自定义 WorkBuddyProxy 的配置与日志导入。

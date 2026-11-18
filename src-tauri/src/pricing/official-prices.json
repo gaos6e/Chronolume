@@ -1,5 +1,251 @@
 [
   {
+    "provider": "openai",
+    "id": "gpt-6.2-astra",
+    "rates": {
+      "input": "8",
+      "output": "40",
+      "read": "0.40",
+      "write": "10"
+    },
+    "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+    "note": "标准 API 文本价，缓存写入按 30 分钟估算。输入超过 272,000 Token 时整次请求采用长上下文价。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "long",
+        "label": "输入超过 272,000 Token",
+        "rates": {
+          "input": "16",
+          "output": "60",
+          "read": "0.80",
+          "write": "20"
+        },
+        "minInputTokens": 272001
+      }
+    ],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "openai",
+    "id": "gpt-6.2-sol",
+    "rates": {
+      "input": "2",
+      "output": "10",
+      "read": "0.10",
+      "write": "2.50"
+    },
+    "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+    "note": "标准 API 文本价，缓存写入按 30 分钟估算。输入超过 272,000 Token 时整次请求采用长上下文价。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "long",
+        "label": "输入超过 272,000 Token",
+        "rates": {
+          "input": "4",
+          "output": "15",
+          "read": "0.20",
+          "write": "5"
+        },
+        "minInputTokens": 272001
+      }
+    ],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "openai",
+    "id": "gpt-6-cyber",
+    "rates": {
+      "input": "20",
+      "output": "100",
+      "read": "2",
+      "write": "25"
+    },
+    "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-6-cyber",
+    "note": "限获准账户的标准 API 参考价。短上下文缓存写入按 30 分钟估算，长上下文缓存写入单价待核验。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "long",
+        "label": "输入超过 272,000 Token",
+        "rates": {
+          "input": "40",
+          "output": "150",
+          "read": "4",
+          "write": null
+        },
+        "minInputTokens": 272001
+      }
+    ],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "openai",
+    "id": "gpt-6.2-astra-law",
+    "rates": {
+      "input": "8",
+      "output": "40",
+      "read": "0.40",
+      "write": "10"
+    },
+    "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+    "note": "限获准账户的标准 API 参考价。官网优惠价至少维持至 2026-12-31，缓存写入按 30 分钟估算。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "openai",
+    "id": "gpt-6-rosalind",
+    "rates": {
+      "input": "10",
+      "output": "50",
+      "read": "1",
+      "write": "12.50"
+    },
+    "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+    "note": "限获准账户的标准 API 参考价。官网优惠价至少维持至 2026-12-31，缓存写入按 30 分钟估算。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "anthropic",
+    "id": "claude-fable-5-2",
+    "rates": {
+      "input": "8",
+      "output": "40",
+      "read": "0.20",
+      "write": "10"
+    },
+    "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "note": "标准全球 API，缓存写入按 5 分钟和 1 小时档位估算。",
+    "aliases": [
+      "claude-fable-5.2",
+      "global.anthropic.claude-fable-5-2"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "anthropic",
+    "id": "claude-mythos-5-2",
+    "rates": {
+      "input": "8",
+      "output": "40",
+      "read": "0.20",
+      "write": "10"
+    },
+    "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "note": "限获准组织。标准全球 API，缓存写入按 5 分钟和 1 小时档位估算。",
+    "aliases": [
+      "claude-mythos-5.2",
+      "global.anthropic.claude-mythos-5-2"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "google",
+    "id": "gemini-4-carbon",
+    "rates": {
+      "input": "2",
+      "output": "10",
+      "read": "0.10",
+      "write": null
+    },
+    "sourceUrl": "https://aistudio.google.com/docs/pricing#gemini-4-carbon",
+    "note": "标准付费文本价。2026-12-01 起采用已公布的正式价。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "regular",
+        "label": "2026-12 起",
+        "rates": {
+          "input": "4",
+          "output": "20",
+          "read": "0.20",
+          "write": null
+        },
+        "startsAtMs": 1796083200000
+      }
+    ],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "google",
+    "id": "gemini-4-hydrogen",
+    "rates": {
+      "input": "1.50",
+      "output": "7.50",
+      "read": "0.075",
+      "write": null
+    },
+    "sourceUrl": "https://aistudio.google.com/docs/pricing#gemini-4-hydrogen",
+    "note": "标准付费文本价，支持隐式缓存。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "google",
+    "id": "gemini-decision-1",
+    "rates": {
+      "input": "0.10",
+      "output": "0",
+      "read": null,
+      "write": null
+    },
+    "sourceUrl": "https://aistudio.google.com/docs/pricing#gemini-decision",
+    "note": "Decisions API 标准付费输入价。官方输出 Token 为零。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "alibaba",
+    "id": "qwen4-max",
+    "rates": {
+      "input": "1.413",
+      "output": "4.24",
+      "read": "0.071",
+      "write": "1.767"
+    },
+    "sourceUrl": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+    "note": "新加坡国际部署标准价，缓存写入按 5 分钟估算。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-17"
+  },
+  {
+    "provider": "tencent",
+    "id": "hy4-flash",
+    "rates": {
+      "input": "0.035",
+      "output": "0.1405",
+      "read": "0.0015",
+      "write": null
+    },
+    "sourceUrl": "https://www.tencentcloud.com/document/product/1300/78937",
+    "note": "腾讯云国际站美元价。北京时间 2026-11-30 12:00 起恢复目录价。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "regular",
+        "label": "恢复目录价",
+        "rates": {
+          "input": "0.07",
+          "output": "0.281",
+          "read": "0.003",
+          "write": null
+        },
+        "startsAtMs": 1796011200000
+      }
+    ],
+    "checkedOn": "2026-11-17"
+  },
+  {
     "provider": "deepseek",
     "id": "deepseek-v4-pro",
     "rates": {
