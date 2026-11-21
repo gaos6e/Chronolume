@@ -70,8 +70,12 @@ function Test-AppWindow {
     if (-not $process.HasExited) {
       $process.CloseMainWindow() | Out-Null
       if (-not $process.WaitForExit(3000)) {
-        Stop-Process -Id $process.Id -Force
-        Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+        try {
+          $process.Kill()
+        } catch {
+          if (-not $process.HasExited) { throw }
+        }
+        $process.WaitForExit()
       }
     }
   }
