@@ -18,6 +18,7 @@ import { ActionFeedback } from '../../components/ActionFeedback';
 import { Dialog } from '../../components/Dialog';
 import { useListState } from '../../lib/useListState';
 import { invalidateUsageData } from '../../lib/queries';
+import { modelVendorLabel } from '../../lib/modelVendors';
 import { formatCost, formatLatency, formatTokens, formatTps } from '../../lib/format';
 import type { ModelPriceInput, UsageFilters } from '../../types';
 
@@ -25,11 +26,6 @@ const EMPTY_PRICE: ModelPriceInput = {
   provider: 'openai', pricingId: '', displayName: '', inputPerMillionUsd: '',
   outputPerMillionUsd: '', cacheReadPerMillionUsd: '', cacheWritePerMillionUsd: undefined,
 };
-const PRICE_PROVIDERS: Record<string, string> = {
-  openai: 'OpenAI', anthropic: 'Anthropic', deepseek: 'DeepSeek', google: 'Google Gemini',
-  zai: 'Z.AI · GLM', minimax: 'MiniMax', moonshotai: 'Kimi', alibaba: 'Qwen', xai: 'Grok', opencode: 'OpenCode', tencent: 'Tencent Hunyuan',
-};
-
 export function ModelsPage({ filters }: { filters: UsageFilters }) {
   const { t } = useTranslation();
   const tpsDescription = `${t('模型平均 TPS = 有计时记录的总输出 Token ÷ 总活跃秒数，按时长加权。')} ${t('TPS = 输出 Token（含推理）÷ 活跃秒数；活跃时长包含工具调用等等待。')} ${t('已扣除可识别的用户答复等待。')} ${t('进行中轮次按最新日志估算活跃时长，结束后更新为正式计时。')}`;
@@ -87,7 +83,7 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
         <QueryStatus loading={models.isLoading && !models.data} refreshing={models.isFetching && Boolean(models.data)} error={models.error} onRetry={() => void models.refetch()} />
         {models.data && (
         <div className="data-table-wrap" role="region" aria-label={t('模型用量')} tabIndex={0} aria-busy={models.isFetching}><table className="data-table models-usage-table">
-          <thead><tr><th>{t('模型')}</th><th>{t('会话')}</th><th>{t('输入')}</th><th>{t('缓存')}</th><th>{t('输出')}</th><th>{t('推理')}</th><th title={tpsDescription}>{t('平均 TPS')}</th><th title={latencyDescription}>{t('平均首字延迟')}</th><th title={t('缓存命中率仅使用有缓存明细的记录。')}>{t('命中率')}</th><th>{t('成本')}</th><th>{t('平均每百万 Token 成本')}</th><th>{t('最近使用')}</th></tr></thead>
+          <thead><tr><th>{t('模型')}</th><th>{t('会话')}</th><th>{t('输入')}</th><th>{t('缓存')}</th><th>{t('输出')}</th><th>{t('推理')}</th><th title={tpsDescription}>{t('平均 TPS')}</th><th title={latencyDescription}>{t('平均首字延迟')}</th><th title={t('缓存命中率按 Token 计算：缓存读取总量 ÷ 对应的输入总量（含缓存读取和写入）。')}>{t('命中率')}</th><th>{t('成本')}</th><th>{t('平均每百万 Token 成本')}</th><th>{t('最近使用')}</th></tr></thead>
           <tbody>{models.data?.items.map((model) => <tr key={model.model}>
             <td><strong>{model.model}</strong><small>{model.pricingModelId ? `${t('计价')} ${model.pricingModelId}` : t('未匹配价格')}</small></td>
             <td>{model.sessionCount.toLocaleString()}</td><td>{formatTokens(model.freshInputTokens)}</td>
@@ -104,7 +100,7 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
         )}
       </> : <>
         <div className="pricing-toolbar">
-          <div><p>{t('价格单位为 USD / 1M Token。修改后只重算本地汇总，不重新读取 JSONL。')}</p><p className="form-hint">{t('各品牌采用官网标准美元 Token 价，渠道专属价格优先；无渠道价格时采用对应品牌参考价。')}</p><p className="form-hint">{t('DeepSeek 按请求时间区分峰谷；带区间的型号按单次输入选择价格。同一模型的历史别名统一合并统计。')}</p></div>
+          <div><p>{t('价格单位为 USD / 1M Token。修改后只重算本地汇总，不重新读取 JSONL。')}</p><p className="form-hint">{t('同一模型在各平台采用供应商的官方 API 参考价。自定义价格也对所有平台生效。')}</p><p className="form-hint">{t('DeepSeek 按请求时间区分峰谷；带区间的型号按单次输入选择价格。同一模型的历史别名统一合并统计。')}</p></div>
           <div className="toolbar-actions">
             <button type="button" className="quiet-button" disabled={busy || checkUpdate.isPending || !isTauriRuntime()} onClick={() => { resetFeedback(); checkUpdate.mutate(); }}><CloudDownload />{checkUpdate.isPending ? t('正在检查') : t('检查 OpenAI 更新')}</button>
             <button type="button" className="primary-button" disabled={busy || !isTauriRuntime()} onClick={() => openEditor(EMPTY_PRICE)}><CircleDollarSign />{t('添加价格')}</button>
@@ -114,7 +110,7 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
         <ActionFeedback success={(save.isSuccess || remove.isSuccess || restore.isSuccess || applyUpdate.isSuccess) && '价格已更新，本地统计已重算。'} />
         <QueryStatus loading={prices.isLoading && !prices.data} refreshing={prices.isFetching && Boolean(prices.data)} error={prices.error} onRetry={() => void prices.refetch()} />
         {prices.data && <div className="price-catalog-filters">
-          <label><span>{t('价格来源')}</span><select value={priceProvider} onChange={(event) => setPriceProvider(event.target.value)}><option value="">{t('全部品牌与渠道')}</option>{priceProviders.map((provider) => <option key={provider} value={provider}>{PRICE_PROVIDERS[provider] ?? provider}</option>)}</select></label>
+          <label><span>{t('价格来源')}</span><select value={priceProvider} onChange={(event) => setPriceProvider(event.target.value)}><option value="">{t('全部供应商')}</option>{priceProviders.map((provider) => <option key={provider} value={provider}>{modelVendorLabel(provider)}</option>)}</select></label>
           <label><span>{t('查找模型')}</span><input type="search" value={priceSearch} onChange={(event) => setPriceSearch(event.target.value)} placeholder={t('搜索名称或计价 ID')} /></label>
           <small>{visiblePrices?.length ?? 0} / {prices.data.length}</small>
         </div>}
@@ -123,7 +119,7 @@ export function ModelsPage({ filters }: { filters: UsageFilters }) {
           <thead><tr><th>{t('计价 ID')}</th><th>{t('输入')}</th><th>{t('缓存读')}</th><th>{t('缓存写')}</th><th>{t('输出')}</th><th>{t('来源')}</th><th><span className="sr-only">{t('操作')}</span></th></tr></thead>
           <tbody>{visiblePrices?.map((price) => <tr key={`${price.provider}-${price.pricingId}`} className={price.isDeleted ? 'deleted-row' : ''}>
             <td><strong>{price.displayName}</strong><small>{price.provider} / {price.pricingId}</small></td>
-            <td>${price.inputPerMillionUsd}</td><td>{price.cacheReadPerMillionUsd == null ? 'N/A' : `$${price.cacheReadPerMillionUsd}`}</td>
+            <td>${price.inputPerMillionUsd}</td><td>{price.cacheReadPerMillionUsd == null ? '—' : `$${price.cacheReadPerMillionUsd}`}</td>
             <td>{price.cacheWritePerMillionUsd ? `$${price.cacheWritePerMillionUsd}` : 'N/A'}</td><td>${price.outputPerMillionUsd}</td>
             <td className="price-provenance">{price.sourceUrl && price.isBuiltin ? <a href={price.sourceUrl} target="_blank" rel="noreferrer">{t('官网价格')}</a> : price.isBuiltin ? t('内置官方快照') : t('用户价格')}{price.sourceUpdatedAtMs && <small>{new Date(price.sourceUpdatedAtMs).toLocaleDateString(undefined, { timeZone: 'UTC' })}</small>}{price.pricingNote && !price.isOverridden && <small>{t(price.pricingNote)}</small>}{price.isDeleted && <small className="warning-copy">{t('已删除')}</small>}{price.isOverridden && <small>{t('已覆盖')}</small>}{price.pricingId === 'gpt-5.5' && <small>{t('标准价适用于不超过 272K 输入')}</small>}</td>
             <td><div className="row-actions">

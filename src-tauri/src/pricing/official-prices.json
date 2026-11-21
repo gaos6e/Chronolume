@@ -148,6 +148,21 @@
   },
   {
     "provider": "google",
+    "id": "gemini-4-neon",
+    "rates": {
+      "input": "3",
+      "output": "15",
+      "read": "0.15",
+      "write": null
+    },
+    "sourceUrl": "https://aistudio.google.com/docs/pricing#gemini-4-neon",
+    "note": "标准付费文本价，支持隐式缓存。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-21"
+  },
+  {
+    "provider": "google",
     "id": "gemini-4-carbon",
     "rates": {
       "input": "2",
@@ -275,7 +290,7 @@
   },
   {
     "provider": "deepseek",
-    "id": "deepseek-flash",
+    "id": "deepseek-v4.1-flash",
     "rates": {
       "input": "0.30",
       "output": "1.20",
@@ -285,7 +300,7 @@
     "sourceUrl": "https://api-docs.deepseek.com/quick_start/pricing/",
     "note": "按请求 UTC 时间选择高峰或非高峰半价，含 2026 年中国节假日。",
     "aliases": [
-      "deepseek-v4.1-flash",
+      "deepseek-flash",
       "deepseek-v4.1-flash-1017",
       "deepseek-v4-flash",
       "deepseek-v4-flash-vision-exp"
@@ -302,7 +317,8 @@
         },
         "offPeak": true
       }
-    ]
+    ],
+    "checkedOn": "2026-11-07"
   },
   {
     "provider": "google",
@@ -381,6 +397,33 @@
         "startsAtMs": 1798761600000
       }
     ]
+  },
+  {
+    "provider": "google",
+    "id": "gemini-3.7-flash",
+    "rates": {
+      "input": "0.75",
+      "output": "3.75",
+      "read": "0.075",
+      "write": null
+    },
+    "sourceUrl": "https://ai.google.dev/gemini-api/docs/pricing",
+    "note": "标准文本价；2027-01-01 起按官网已公布的新价格计费。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "regular",
+        "label": "2027-01 起",
+        "rates": {
+          "input": "1.50",
+          "output": "7.50",
+          "read": "0.15",
+          "write": null
+        },
+        "startsAtMs": 1798761600000
+      }
+    ],
+    "checkedOn": "2026-11-07"
   },
   {
     "provider": "google",
@@ -517,7 +560,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm5.3"
+    ],
     "tiers": []
   },
   {
@@ -531,7 +576,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm5.3flash"
+    ],
     "tiers": []
   },
   {
@@ -545,7 +592,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm5.3flashx"
+    ],
     "tiers": []
   },
   {
@@ -559,7 +608,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm5.2"
+    ],
     "tiers": []
   },
   {
@@ -573,7 +624,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm5.1"
+    ],
     "tiers": []
   },
   {
@@ -587,7 +640,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm5"
+    ],
     "tiers": []
   },
   {
@@ -601,7 +656,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm4.7"
+    ],
     "tiers": []
   },
   {
@@ -615,7 +672,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm4.6"
+    ],
     "tiers": []
   },
   {
@@ -629,7 +688,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm4.5"
+    ],
     "tiers": []
   },
   {
@@ -643,7 +704,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm4.7flash"
+    ],
     "tiers": []
   },
   {
@@ -657,7 +720,9 @@
     },
     "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
     "note": "官方美元 Token 价；不含工具与缓存存储费用。",
-    "aliases": [],
+    "aliases": [
+      "glm4.5flash"
+    ],
     "tiers": []
   },
   {
@@ -711,8 +776,13 @@
     },
     "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat",
     "note": "官方美元 Token 价；5 分钟缓存写入为输入价，1 小时为输入价的 2 倍。",
-    "aliases": [],
-    "tiers": []
+    "aliases": [
+      "kimi-k3-1",
+      "kimi-k3-1-pro",
+      "kimi-k3.1"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
   },
   {
     "provider": "moonshotai",
@@ -873,6 +943,87 @@
     ]
   },
   {
+    "provider": "xai",
+    "id": "grok-4.20-multi-agent-0309",
+    "rates": {
+      "input": "1.25",
+      "output": "2.5",
+      "read": "0.2",
+      "write": null
+    },
+    "sourceUrl": "https://docs.x.ai/developers/pricing",
+    "note": "全球标准价；单次输入达到 200K 自动使用长上下文价。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "long",
+        "label": "输入 ≥ 200K",
+        "rates": {
+          "input": "2.5",
+          "output": "5",
+          "read": "0.4",
+          "write": null
+        },
+        "minInputTokens": 200000
+      }
+    ],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "xai",
+    "id": "grok-4.20-0309-reasoning",
+    "rates": {
+      "input": "1.25",
+      "output": "2.5",
+      "read": "0.2",
+      "write": null
+    },
+    "sourceUrl": "https://docs.x.ai/developers/pricing",
+    "note": "全球标准价；单次输入达到 200K 自动使用长上下文价。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "long",
+        "label": "输入 ≥ 200K",
+        "rates": {
+          "input": "2.5",
+          "output": "5",
+          "read": "0.4",
+          "write": null
+        },
+        "minInputTokens": 200000
+      }
+    ],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "xai",
+    "id": "grok-4.20-0309-non-reasoning",
+    "rates": {
+      "input": "1.25",
+      "output": "2.5",
+      "read": "0.2",
+      "write": null
+    },
+    "sourceUrl": "https://docs.x.ai/developers/pricing",
+    "note": "全球标准价；单次输入达到 200K 自动使用长上下文价。",
+    "aliases": [],
+    "tiers": [
+      {
+        "suffix": "long",
+        "label": "输入 ≥ 200K",
+        "rates": {
+          "input": "2.5",
+          "output": "5",
+          "read": "0.4",
+          "write": null
+        },
+        "minInputTokens": 200000
+      }
+    ],
+    "checkedOn": "2026-11-07"
+  },
+  {
     "provider": "alibaba",
     "id": "qwen3.8-flash",
     "rates": {
@@ -963,258 +1114,6 @@
         "minInputTokens": 256001
       }
     ]
-  },
-  {
-    "provider": "opencode",
-    "id": "big-pickle",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "glm-5.3-flash-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "beam-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "flint-40b-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "mimo-v2.6-flash-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "nemotron-3-ultra-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "nemotron-3.5-lightning-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "nemotron-3.5-super-vl-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "jev-1.13-free",
-    "rates": {
-      "input": "0",
-      "output": "0",
-      "read": "0",
-      "write": "0"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方免费型号；不向其他提供方推广零价。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "minimax-m3",
-    "rates": {
-      "input": "0.3",
-      "output": "1.2",
-      "read": "0.06",
-      "write": null
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "minimax-m2.7",
-    "rates": {
-      "input": "0.3",
-      "output": "1.2",
-      "read": "0.06",
-      "write": null
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "minimax-m2.5",
-    "rates": {
-      "input": "0.3",
-      "output": "1.2",
-      "read": "0.06",
-      "write": null
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "kimi-k2.7-code",
-    "rates": {
-      "input": "0.95",
-      "output": "4",
-      "read": "0.19",
-      "write": null
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "kimi-k2.6",
-    "rates": {
-      "input": "0.95",
-      "output": "4",
-      "read": "0.16",
-      "write": null
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "kimi-k2.5",
-    "rates": {
-      "input": "0.6",
-      "output": "3",
-      "read": "0.1",
-      "write": null
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "qwen3.8-max",
-    "rates": {
-      "input": "2",
-      "output": "6",
-      "read": "0.25",
-      "write": "2.5"
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "deepseek-v4-pro",
-    "rates": {
-      "input": "1.74",
-      "output": "3.48",
-      "read": "0.145",
-      "write": null
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
-  },
-  {
-    "provider": "opencode",
-    "id": "deepseek-v4.1-flash",
-    "rates": {
-      "input": "0.3",
-      "output": "1.2",
-      "read": "0.006",
-      "write": null
-    },
-    "sourceUrl": "https://opencode.ai/v2/docs/console/models/",
-    "note": "OpenCode 官方渠道价；与模型厂商直连价格分别计算。",
-    "aliases": [],
-    "tiers": []
   },
   {
     "provider": "anthropic",
@@ -1309,5 +1208,360 @@
     "note": "官方美元 Token 价；不含订阅与工具费用。",
     "aliases": [],
     "tiers": []
+  },
+  {
+    "provider": "tencent",
+    "id": "hy4",
+    "rates": {
+      "input": "0.834",
+      "output": "2.501",
+      "read": "0.042",
+      "write": null
+    },
+    "sourceUrl": "https://www.tencentcloud.com/document/product/1300/78937",
+    "note": "腾讯云国际站标准美元价，按目录价估算。",
+    "aliases": [
+      "hy4free",
+      "hy4fast"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "tencent",
+    "id": "hy4-preview",
+    "rates": {
+      "input": "0.834",
+      "output": "2.501",
+      "read": "0.042",
+      "write": null
+    },
+    "sourceUrl": "https://www.tencentcloud.com/document/product/1300/78937",
+    "note": "腾讯云国际站标准美元价，按目录价估算。",
+    "aliases": [
+      "hy4-preview-f",
+      "hy4preview"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "tencent",
+    "id": "hy3",
+    "rates": {
+      "input": "0.132",
+      "output": "0.528",
+      "read": "0.033",
+      "write": null
+    },
+    "sourceUrl": "https://www.tencentcloud.com/document/product/1300/78937",
+    "note": "腾讯云国际站标准美元价，按目录价估算。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "xiaomi",
+    "id": "mimo-v2.6-pro",
+    "rates": {
+      "input": "0.435",
+      "output": "0.87",
+      "read": "0.0036",
+      "write": "0"
+    },
+    "sourceUrl": "https://mimo.mi.com/docs/price",
+    "note": "小米 MiMo 海外实时 API 价，缓存写入按官网公布的免费价。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "xiaomi",
+    "id": "mimo-v2.6-flash",
+    "rates": {
+      "input": "0.14",
+      "output": "0.28",
+      "read": "0.0028",
+      "write": "0"
+    },
+    "sourceUrl": "https://mimo.mi.com/docs/price",
+    "note": "小米 MiMo 海外实时 API 价，缓存写入按官网公布的免费价。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "xiaomi",
+    "id": "mimo-v2.6-pro-ultraspeed",
+    "rates": {
+      "input": "4.35",
+      "output": "8.7",
+      "read": "0.036",
+      "write": "0"
+    },
+    "sourceUrl": "https://mimo.mi.com/docs/price",
+    "note": "小米 MiMo 海外实时 API 价，缓存写入按官网公布的免费价。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "xiaomi",
+    "id": "mimo-v2.5-pro",
+    "rates": {
+      "input": "0.435",
+      "output": "0.87",
+      "read": "0.0036",
+      "write": "0"
+    },
+    "sourceUrl": "https://mimo.mi.com/docs/price",
+    "note": "小米 MiMo 海外实时 API 价，缓存写入按官网公布的免费价。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "xiaomi",
+    "id": "mimo-v2.5",
+    "rates": {
+      "input": "0.14",
+      "output": "0.28",
+      "read": "0.0028",
+      "write": "0"
+    },
+    "sourceUrl": "https://mimo.mi.com/docs/price",
+    "note": "小米 MiMo 海外实时 API 价，缓存写入按官网公布的免费价。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "xiaomi",
+    "id": "mimo-v2-flash",
+    "rates": {
+      "input": "0.1",
+      "output": "0.3",
+      "read": "0.01",
+      "write": null
+    },
+    "sourceUrl": "https://mimo.mi.com/docs/en-US/news/previous-news/billing",
+    "note": "小米 MiMo 海外实时 API 标准价。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "minimax",
+    "id": "minimax-m2.7",
+    "rates": {
+      "input": "0.3",
+      "output": "1.2",
+      "read": "0.06",
+      "write": "0.375"
+    },
+    "sourceUrl": "https://platform.minimax.io/subscribe/token-plan?tab=api-enterprise",
+    "note": "官方美元 Token 价；不含订阅与工具费用。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "minimax",
+    "id": "minimax-m2.7-highspeed",
+    "rates": {
+      "input": "0.6",
+      "output": "2.4",
+      "read": "0.06",
+      "write": "0.375"
+    },
+    "sourceUrl": "https://platform.minimax.io/subscribe/token-plan?tab=api-enterprise",
+    "note": "官方美元 Token 价；不含订阅与工具费用。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "alibaba",
+    "id": "qwen3.8-max",
+    "rates": {
+      "input": "2",
+      "output": "6",
+      "read": null,
+      "write": "2.5"
+    },
+    "sourceUrl": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+    "note": "新加坡 International 标准美元价；缓存命中价待核验。",
+    "aliases": [
+      "qwen3.8-max-0902"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "alibaba",
+    "id": "qwen3.7-max",
+    "rates": {
+      "input": "2.5",
+      "output": "7.5",
+      "read": null,
+      "write": "3.125"
+    },
+    "sourceUrl": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+    "note": "新加坡 International 标准美元价；缓存命中价待核验。",
+    "aliases": [
+      "qwen3.7-max-2026-05-20",
+      "qwen3.7-max-2026-06-08"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "alibaba",
+    "id": "qwen3.8-2.4t-a95b",
+    "rates": {
+      "input": "2",
+      "output": "6",
+      "read": null,
+      "write": "2.5"
+    },
+    "sourceUrl": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+    "note": "新加坡 International 标准美元价；缓存命中价待核验。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "alibaba",
+    "id": "qwen3.8-27b",
+    "rates": {
+      "input": "0.5",
+      "output": "3",
+      "read": null,
+      "write": "0.625"
+    },
+    "sourceUrl": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+    "note": "新加坡 International 标准美元价；缓存命中价待核验。",
+    "aliases": [],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "zai",
+    "id": "glm-5.3-flashx-legal",
+    "rates": {
+      "input": "0.37",
+      "output": "1.25",
+      "read": "0.075",
+      "write": null
+    },
+    "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+    "note": "官方美元 Token 价；不含工具与缓存存储费用。",
+    "aliases": [
+      "glm5.3flashxlegal"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "zai",
+    "id": "glm-4.7-flashx",
+    "rates": {
+      "input": "0.07",
+      "output": "0.4",
+      "read": "0.01",
+      "write": null
+    },
+    "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+    "note": "官方美元 Token 价；不含工具与缓存存储费用。",
+    "aliases": [
+      "glm4.7flashx"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "zai",
+    "id": "glm-4.5-air",
+    "rates": {
+      "input": "0.2",
+      "output": "1.1",
+      "read": "0.03",
+      "write": null
+    },
+    "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+    "note": "官方美元 Token 价；不含工具与缓存存储费用。",
+    "aliases": [
+      "glm4.5air"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "zai",
+    "id": "glm-4.5-airx",
+    "rates": {
+      "input": "1.1",
+      "output": "4.5",
+      "read": "0.22",
+      "write": null
+    },
+    "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+    "note": "官方美元 Token 价；不含工具与缓存存储费用。",
+    "aliases": [
+      "glm4.5airx"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "zai",
+    "id": "glm-4.5-x",
+    "rates": {
+      "input": "2.2",
+      "output": "8.9",
+      "read": "0.45",
+      "write": null
+    },
+    "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+    "note": "官方美元 Token 价；不含工具与缓存存储费用。",
+    "aliases": [
+      "glm4.5x"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "zai",
+    "id": "glm-4.6v",
+    "rates": {
+      "input": "0.3",
+      "output": "0.9",
+      "read": "0.05",
+      "write": null
+    },
+    "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+    "note": "官方美元 Token 价；不含工具与缓存存储费用。",
+    "aliases": [
+      "glm4.6v"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
+  },
+  {
+    "provider": "zai",
+    "id": "glm-4.6v-flash",
+    "rates": {
+      "input": "0",
+      "output": "0",
+      "read": "0",
+      "write": "0"
+    },
+    "sourceUrl": "https://docs.z.ai/guides/overview/pricing",
+    "note": "官方美元 Token 价；不含工具与缓存存储费用。",
+    "aliases": [
+      "glm4.6vflash"
+    ],
+    "tiers": [],
+    "checkedOn": "2026-11-07"
   }
 ]

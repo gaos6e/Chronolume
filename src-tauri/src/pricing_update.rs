@@ -8,7 +8,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
-use crate::pricing::OFFICIAL_PRICING_SOURCE;
+use crate::pricing::{OFFICIAL_PRICING_SOURCE, canonical_pricing_id};
 use crate::store::ModelPriceRecord;
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -180,7 +180,7 @@ fn parse_official_pricing(html: &str) -> AppResult<Vec<TrustedPriceRow>> {
     for captures in row_pattern.captures_iter(html) {
         let raw_model = captures.get(1).map_or("", |value| value.as_str());
         let pricing_id = decode_model_id(raw_model);
-        if !is_openai_model_id(&pricing_id) {
+        if !is_openai_model_id(&pricing_id) || canonical_pricing_id(&pricing_id) != pricing_id {
             continue;
         }
         let Some(input) = parse_price(captures.get(2).map_or("", |value| value.as_str())) else {

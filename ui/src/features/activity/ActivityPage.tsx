@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Binary, Boxes, TerminalSquare, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getTools } from '../../api';
+import { DragScroll } from '../../components/DragScroll';
 import { QueryStatus } from '../../components/QueryStatus';
 import type { UsageFilters } from '../../types';
 
@@ -26,10 +27,14 @@ export function ActivityPage({ filters }: { filters: UsageFilters }) {
       <div className="stat-card"><Binary /><span>{t('结构化类别')}</span><strong>{tools.data?.categories.length ?? '—'}</strong></div>
       <div className="stat-card"><TerminalSquare /><span>{t('原始命令')}</span><strong>{t('不落库')}</strong></div>
     </div>
-    <section className="feature-card"><div className="feature-card-heading"><div><span>TREND</span><h2>{t('每日工具调用')}</h2></div></div>
-      {tools.data.trend.length === 0 ? <div className="chart-empty">{t('当前范围内没有工具活动。')}</div> : <div className="spark-bars" role="img" aria-label={t('每日工具调用')}>{tools.data?.trend.map((point) => {
-        return <i key={point.date} style={{ height: `${Math.max(2, (point.callCount / toolTrendMax) * 100)}%` }} title={`${point.date} · ${point.callCount.toLocaleString()}`} />;
-      })}</div>}
+    <section className="feature-card"><div className="feature-card-heading"><div><span>{t('趋势')}</span><h2>{t('每日工具调用')}</h2></div></div>
+      {tools.data.trend.length === 0 ? <div className="chart-empty">{t('当前范围内没有工具活动。')}</div> : (
+        <DragScroll axis="x" label={t('每日工具调用')}>
+          <div className="spark-bars daily-tool-bars" role="img" aria-label={t('每日工具调用')}>
+            {tools.data.trend.map((point) => <i key={point.date} style={{ height: `${Math.max(2, (point.callCount / toolTrendMax) * 100)}%` }} title={`${point.date} · ${point.callCount.toLocaleString()}`} />)}
+          </div>
+        </DragScroll>
+      )}
       {tools.data.trend.length > 0 && <details className="chart-data" onToggle={(event) => setTableOpen(event.currentTarget.open)}>
         <summary>{t('查看图表数据')}</summary>
         {tableOpen && <div className="data-table-wrap" tabIndex={0} role="region" aria-label={t('每日工具调用')}>
@@ -41,15 +46,18 @@ export function ActivityPage({ filters }: { filters: UsageFilters }) {
       </details>}
     </section>
     <div className="two-column-grid">
-      <section className="feature-card"><div className="feature-card-heading"><div><span>CATEGORIES</span><h2>{t('读写与执行')}</h2></div></div>
+      <section className="feature-card"><div className="feature-card-heading"><div><span>{t('工具类别')}</span><h2>{t('读写与执行')}</h2></div></div>
         <div className="bar-list">{tools.data?.categories.map((category) => {
           return <div key={category.category}><span>{t(category.category)}</span><div aria-hidden="true"><i style={{ width: `${(category.callCount / categoryMax) * 100}%` }} /></div><strong>{category.callCount.toLocaleString()}</strong></div>;
         })}</div>
         {tools.data.categories.length === 0 && <div className="table-empty">{t('当前范围内没有工具活动。')}</div>}
       </section>
-      <section className="feature-card"><div className="feature-card-heading"><div><span>TOOLS</span><h2>{t('Top 工具')}</h2></div></div>
-        <div className="compact-list tool-list-scroll" tabIndex={tools.data.topTools.length > 0 ? 0 : undefined} role="region" aria-label={t('Top 工具')}>{tools.data?.topTools.map((tool) => <div key={`${tool.toolName}-${tool.category}-${tool.operationKind}`}><span>{tool.toolName}<small>{t(tool.category)} · {t(tool.operationKind)}</small></span><strong>{tool.callCount.toLocaleString()}</strong></div>)}</div>
-        {!tools.isLoading && tools.data?.totalCalls === 0 && <div className="table-empty">{t('当前范围内没有工具活动。')}</div>}
+      <section className="feature-card"><div className="feature-card-heading"><div><span>{t('工具调用')}</span><h2>{t('Top 工具')}</h2></div></div>
+        {tools.data.topTools.length > 0 ? (
+          <DragScroll axis="y" label={t('Top 工具')} className="tool-list-scroll">
+            <div className="compact-list">{tools.data.topTools.map((tool) => <div key={`${tool.toolName}-${tool.category}-${tool.operationKind}`}><span>{tool.toolName}<small>{t(tool.category)} · {t(tool.operationKind)}</small></span><strong>{tool.callCount.toLocaleString()}</strong></div>)}</div>
+          </DragScroll>
+        ) : <div className="table-empty">{t('当前范围内没有工具活动。')}</div>}
       </section>
     </div>
     </>}

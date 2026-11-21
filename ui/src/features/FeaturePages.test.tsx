@@ -52,6 +52,34 @@ function renderPage(node: React.ReactNode) {
 }
 
 describe('feature pages', () => {
+  it('saves all three Antigravity roots independently and restores automatic discovery', async () => {
+    const roots = [
+      { settingKey: 'antigravity', label: 'Antigravity App' },
+      { settingKey: 'antigravityCli', label: 'Antigravity CLI' },
+      { settingKey: 'antigravityIde', label: 'Antigravity IDE' },
+    ].map(root => ({ ...root, available: true, path: 'D:/' + root.settingKey }));
+    const sources = [{ agent: 'antigravity', available: true, roots }];
+    api.getSourceSettings.mockResolvedValue(sources);
+    api.saveSourceSettings.mockResolvedValue([{ ...sources[0], roots: roots.map(root => ({ ...root, customPath: root.path })) }]);
+    const onSaved = vi.fn();
+    renderPage(<SourceConnections syncing={false} onSaved={onSaved} />);
+    const card = screen.getByRole('heading', { name: 'Google Antigravity' }).closest('article') as HTMLElement;
+    await within(card).findByText('Antigravity CLI');
+    const configure = within(card).getByRole('button', { name: '配置目录' });
+    fireEvent.click(configure);
+    for (const root of roots) {
+      fireEvent.change(screen.getByLabelText(root.label + ' · 数据目录'), { target: { value: root.path } });
+    }
+    fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(api.saveSourceSettings).toHaveBeenLastCalledWith(Object.fromEntries(roots.map(root => [root.settingKey, root.path])));
+    fireEvent.click(configure);
+    expect(screen.getByLabelText('Antigravity IDE · 数据目录')).toHaveValue('D:/antigravityIde');
+    fireEvent.click(screen.getByRole('button', { name: '恢复自动发现' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
+    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenLastCalledWith({ antigravity: null, antigravityCli: null, antigravityIde: null }));
+  });
+
   it('configures the WorkBuddy CLI root and preserves it while editing another agent', async () => {
     const sources = [
       { agent: 'codex', path: 'C:/default/codex', customPath: 'D:/codex', available: true },
@@ -60,10 +88,11 @@ describe('feature pages', () => {
         { settingKey: 'workbuddyAi', label: 'WorkBuddy AI', path: 'D:/wb-ai', customPath: 'D:/wb-ai', available: true },
         { settingKey: 'workbuddyCli', label: 'CodeBuddy Code CLI', path: 'C:/default/.codebuddy', available: false },
       ] },
+      { agent: 'zcode', path: 'C:/default/.zcode', customPath: 'D:/zcode', available: true },
     ];
     api.getSourceSettings.mockResolvedValue(sources);
     const savedRoots = sources[1].roots?.map((root) => ({ ...root, customPath: `E:/${root.settingKey}` }));
-    api.saveSourceSettings.mockResolvedValue([sources[0], { ...sources[1], roots: savedRoots }]);
+    api.saveSourceSettings.mockResolvedValue([sources[0], { ...sources[1], roots: savedRoots }, sources[2]]);
     const onSaved = vi.fn();
     renderPage(<SourceConnections syncing={false} onSaved={onSaved} />);
     await screen.findByText('D:/wb-ai');
@@ -80,20 +109,26 @@ describe('feature pages', () => {
     fireEvent.click(within(codex).getByRole('button', { name: '配置目录' }));
     fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
     await waitFor(() => expect(api.saveSourceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ workbuddyCli: 'E:/workbuddyCli' })));
+    const zcode = screen.getByRole('heading', { name: 'Z Code' }).closest('article') as HTMLElement;
+    fireEvent.click(within(zcode).getByRole('button', { name: '配置目录' }));
+    expect(screen.getByLabelText('Z Code · 数据目录')).toHaveValue('D:/zcode');
+    fireEvent.change(screen.getByLabelText('Z Code · 数据目录'), { target: { value: 'E:/zcode/cli/db/db.sqlite' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存并同步' }));
+    await waitFor(() => expect(api.saveSourceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ zcode: 'E:/zcode/cli/db/db.sqlite', workbuddyCli: 'E:/workbuddyCli' })));
   });
   it('filters official price rows and keeps the source link and zero rates visible', async () => {
     api.getModels.mockResolvedValue({ items: [], total: 0, page: 0, pageSize: 30 });
     api.listModelPrices.mockResolvedValue([
       {provider:'deepseek',pricingId:'deepseek-v4-pro',displayName:'DeepSeek V4 Pro',inputPerMillionUsd:'1.32',outputPerMillionUsd:'3.96',cacheReadPerMillionUsd:'0.044',isBuiltin:true,isDeleted:false,isOverridden:false,revision:1,sourceUrl:'https://api-docs.deepseek.com/quick_start/pricing/',pricingNote:'高峰价'},
-      {provider:'opencode',pricingId:'glm-5.3-flash-free',displayName:'GLM Free',inputPerMillionUsd:'0',outputPerMillionUsd:'0',cacheReadPerMillionUsd:'0',isBuiltin:true,isDeleted:false,isOverridden:false,revision:1,sourceUrl:'https://opencode.ai/v2/docs/console/models/'},
+      {provider:'zai',pricingId:'glm-4.7-flash',displayName:'GLM-4.7-Flash',inputPerMillionUsd:'0',outputPerMillionUsd:'0',cacheReadPerMillionUsd:'0',isBuiltin:true,isDeleted:false,isOverridden:false,revision:1,sourceUrl:'https://docs.z.ai/guides/overview/pricing'},
     ]);
     renderPage(<ModelsPage filters={filters} />);
     fireEvent.click(screen.getByRole('tab', { name: '价格表' }));
     expect(await screen.findByText('DeepSeek V4 Pro')).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: '官网价格' })[0]).toHaveAttribute('href','https://api-docs.deepseek.com/quick_start/pricing/');
-    fireEvent.change(screen.getByRole('combobox',{name:'价格来源'}),{target:{value:'opencode'}});
+    fireEvent.change(screen.getByRole('combobox',{name:'价格来源'}),{target:{value:'zai'}});
     expect(screen.queryByText('DeepSeek V4 Pro')).not.toBeInTheDocument();
-    expect(screen.getByText('GLM Free')).toBeInTheDocument();
+    expect(screen.getByText('GLM-4.7-Flash')).toBeInTheDocument();
     expect(screen.getAllByText('$0')).toHaveLength(3);
     fireEvent.change(screen.getByRole('searchbox',{name:'查找模型'}),{target:{value:'unlisted'}});
     expect(screen.getByText('没有匹配的价格。')).toBeInTheDocument();
@@ -126,7 +161,7 @@ describe('feature pages', () => {
     api.getWorkspaces.mockResolvedValue({
       page: 0, pageSize: 25, total: 1,
       items: [{
-        id: 'workspace-1', label: 'Alpha', normalizedPath: 'D:/work/alpha', ignored: false,
+        id: 'workspace-1', agent: 'codex', label: 'Codex-Alpha', alias: 'Alpha', normalizedPath: 'D:/work/alpha', ignored: false,
         sessionCount: 4, totalTokens: 12_000, estimatedCostMicrousd: 750_000,
         unpricedEventCount: 0, activeMs: 60_000, activeDays: 2, lastActivityAtMs: 1_788_000_000_000,
       }],
@@ -134,10 +169,11 @@ describe('feature pages', () => {
     const open = vi.fn();
     renderPage(<ProjectsPage filters={filters} onOpenWorkspace={open} />);
 
-    expect(await screen.findByText('Alpha')).toBeInTheDocument();
+    expect(await screen.findByText('Codex-Alpha')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '打开工作区统计' }));
     expect(open).toHaveBeenCalledWith('workspace-1');
     fireEvent.click(screen.getByRole('button', { name: '编辑工作区' }));
+    expect(screen.getByLabelText('别名')).toHaveValue('Alpha');
     fireEvent.change(screen.getByLabelText('别名'), { target: { value: 'Alpha alias' } });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(api.updateWorkspaceSettings).toHaveBeenCalledWith('workspace-1', 'Alpha alias', false));
@@ -148,7 +184,7 @@ describe('feature pages', () => {
       id: 'session-1', title: '2026-07-10 · abc123', workspaceId: 'workspace-1', workspaceLabel: 'Alpha',
       startedAtMs: 1_788_000_000_000, endedAtMs: 1_788_000_060_000,
       activeMs: 60_000, activeMethod: 'lifecycle', activeIsEstimate: false,
-      modelProvider: 'openai', latestModel: 'gpt-5.6-sol', totalTokens: 120,
+      modelProvider: 'custom', modelVendor: 'openai', latestModel: 'gpt-5.6-sol', totalTokens: 120,
       inputTokens: 90, freshInputTokens: 70, cachedInputTokens: 20, outputTokens: 30,
       averageFirstTokenLatencyMs: 1250, firstTokenLatencySampleCount: 2,
       reasoningTokens: 10, tokensPerSecond: 0.5, estimatedCostMicrousd: 5_000, unpricedEventCount: 0,
@@ -173,18 +209,21 @@ describe('feature pages', () => {
     api.getUsageEvents.mockResolvedValue({
       page: 0, pageSize: 100, total: 1,
       items: [{
-        id: 1, occurredAtMs: session.startedAtMs, provider: 'openai', model: 'gpt-5.6-sol',
+        id: 1, occurredAtMs: session.startedAtMs, provider: 'custom', modelVendor: 'openai', model: 'gpt-5.6-sol',
         inputTokens: 90, cachedInputTokens: 20, outputTokens: 30, reasoningTokens: 10,
         totalTokens: 120, estimatedCostMicrousd: 5_000, integrityStatus: 'complete',
       }],
     });
-    renderPage(<SessionsPage filters={filters} />);
+    const modelVendors = ['anthropic', 'openai'];
+    renderPage(<SessionsPage filters={{ ...filters, modelVendors }} />);
 
     expect(await screen.findByText('0.5 token/s')).toBeInTheDocument();
     expect(screen.getByText('1.25 s')).toHaveAttribute('title', expect.stringContaining('有效轮次：2'));
     expect(screen.getByRole('columnheader', { name: 'TPS' })).toHaveAttribute('title', expect.stringContaining('含推理'));
     fireEvent.change(screen.getByRole('combobox', { name: '排序' }), { target: { value: 'tps' } });
-    await waitFor(() => expect(api.getSessions).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'tps', descending: true })));
+    await waitFor(() => expect(api.getSessions).toHaveBeenLastCalledWith(expect.objectContaining({
+      filters: { ...filters, modelVendors }, sort: 'tps', descending: true,
+    })));
     fireEvent.click(screen.getByRole('button', { name: '降序' }));
     await waitFor(() => expect(api.getSessions).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'tps', descending: false })));
     fireEvent.change(screen.getByRole('combobox', { name: '排序' }), { target: { value: 'ttft' } });
@@ -195,7 +234,7 @@ describe('feature pages', () => {
     expect(within(screen.getByLabelText('会话结构化详情')).getByText(/生命周期/)).toBeInTheDocument();
     expect(within(screen.getByLabelText('会话结构化详情')).getByText('0.5 token/s')).toBeInTheDocument();
     expect(within(screen.getByLabelText('会话结构化详情')).getByText('1.25 s')).toBeInTheDocument();
-    expect(api.getUsageEvents).toHaveBeenCalledWith('session-1', 0);
+    expect(api.getUsageEvents).toHaveBeenCalledWith('session-1', 0, 100, modelVendors);
   });
 
   it('shows unpriced usage and supports price add, edit, delete, and restore', async () => {
@@ -293,7 +332,7 @@ describe('feature pages', () => {
 
   it('requires confirmation before clearing and preserves a retryable failure in the dialog', async () => {
     api.getDiagnostics.mockResolvedValue({ sources: [], recentRuns: [], databaseIntegrityOk: true, databaseSizeBytes: 0, indexedSessions: 0, retainedUsageEvents: 0, retainedToolEvents: 0 });
-    api.clearAnalysis.mockRejectedValueOnce({ code: 'database_error', message: '分析数据库操作失败' });
+    api.clearAnalysis.mockRejectedValueOnce({ code: 'database_backup_failed', message: '数据库备份失败，未执行重新索引或清空' });
     renderPage(<DataPage />);
     const clear = screen.getByRole('button', { name: '清空分析库' });
     await waitFor(() => expect(clear).toBeEnabled());
@@ -301,7 +340,7 @@ describe('feature pages', () => {
     const dialog = screen.getByRole('dialog', { name: '清空分析库' });
     expect(api.clearAnalysis).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: '确认清空' }));
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent('分析数据库操作失败');
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('数据库备份失败，未执行重新索引或清空');
     expect(dialog).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: '确认清空' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());

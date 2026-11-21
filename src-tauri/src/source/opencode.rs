@@ -232,13 +232,18 @@ fn json_files(root: &Path) -> AppResult<Vec<PathBuf>> {
 
 fn message(id: String, data: &Value, fallback: Option<i64>) -> Option<Message> {
     let time = timestamp(data.pointer("/time/created")).or(fallback)?;
-    let model = data
-        .get("modelID")
-        .and_then(Value::as_str)
-        .or_else(|| data.pointer("/model/id").and_then(Value::as_str))
-        .or_else(|| data.pointer("/model/modelID").and_then(Value::as_str))
-        .unwrap_or("unknown")
-        .to_string();
+    let model = [
+        "/modelID",
+        "/modelId",
+        "/model/id",
+        "/model/modelID",
+        "/model/modelId",
+    ]
+    .iter()
+    .filter_map(|pointer| data.pointer(pointer).and_then(Value::as_str))
+    .find(|model| super::normalized::recorded_model(model))
+    .unwrap_or("unknown")
+    .to_string();
     let provider = data
         .get("providerID")
         .and_then(Value::as_str)

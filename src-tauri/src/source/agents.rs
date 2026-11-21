@@ -15,6 +15,30 @@ use super::{
 };
 use crate::error::{AppError, AppResult};
 
+const AGENT_NAMES: &[(&str, &str)] = &[
+    ("codex", "Codex"),
+    ("claude", "Claude Code"),
+    ("opencode", "OpenCode"),
+    ("dsh", "DeepSeek Harness"),
+    ("workbuddy", "WorkBuddy"),
+    ("zcode", "Z Code"),
+    ("antigravity", "Google Antigravity"),
+];
+
+pub(crate) fn session_agent(id: &str) -> &'static str {
+    id.split_once(':')
+        .and_then(|(prefix, _)| AGENT_NAMES.iter().find(|(key, _)| prefix == *key))
+        .map_or("codex", |(key, _)| key)
+}
+
+pub(crate) fn workspace_label(agent: &str, name: &str) -> String {
+    let prefix = AGENT_NAMES
+        .iter()
+        .find(|(key, _)| *key == agent)
+        .map_or(agent, |(_, label)| *label);
+    format!("{prefix}-{name}")
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SourceSettings {
@@ -22,6 +46,10 @@ pub struct SourceSettings {
     pub claude: Option<String>,
     pub opencode: Option<String>,
     pub dsh: Option<String>,
+    pub zcode: Option<String>,
+    pub antigravity: Option<String>,
+    pub antigravity_cli: Option<String>,
+    pub antigravity_ide: Option<String>,
     pub workbuddy: Option<String>,
     pub workbuddy_ai: Option<String>,
     pub workbuddy_cli: Option<String>,
@@ -55,6 +83,10 @@ impl SourceSettings {
             &mut self.claude,
             &mut self.opencode,
             &mut self.dsh,
+            &mut self.zcode,
+            &mut self.antigravity,
+            &mut self.antigravity_cli,
+            &mut self.antigravity_ide,
             &mut self.workbuddy,
             &mut self.workbuddy_ai,
             &mut self.workbuddy_cli,
@@ -85,6 +117,21 @@ impl SourceSettings {
                 .map(PathBuf::from)
         };
         Ok(match agent {
+            "antigravity" => self
+                .antigravity
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".gemini/antigravity")),
+            "antigravityCli" => self
+                .antigravity_cli
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".gemini/antigravity-cli")),
+            "antigravityIde" => self
+                .antigravity_ide
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".gemini/antigravity-ide")),
             "workbuddy" => self
                 .workbuddy
                 .as_ref()
@@ -119,6 +166,12 @@ impl SourceSettings {
                 .map(PathBuf::from)
                 .or_else(|| environment("DSH_HOME"))
                 .unwrap_or_else(|| home.join(".dsh")),
+            "zcode" => self
+                .zcode
+                .as_ref()
+                .map(PathBuf::from)
+                .or_else(|| environment("ZCODE_HOME"))
+                .unwrap_or_else(|| home.join(".zcode")),
             "opencode" => {
                 if let Some(path) = &self.opencode {
                     return Ok(PathBuf::from(path));
@@ -142,46 +195,59 @@ impl SourceSettings {
     }
 
     pub fn describe(&self) -> AppResult<Vec<AgentSourceSetting>> {
-        ["codex", "claude", "opencode", "dsh", "workbuddy"]
-            .into_iter()
-            .map(|agent| {
+        AGENT_NAMES
+            .iter()
+            .map(|&(agent, _)| {
                 let path = self.resolved(agent)?;
                 let custom_path = match agent {
                     "codex" => &self.codex,
                     "claude" => &self.claude,
                     "dsh" => &self.dsh,
+                    "zcode" => &self.zcode,
+                    "antigravity" => &self.antigravity,
                     "workbuddy" => &self.workbuddy,
                     _ => &self.opencode,
                 }
                 .clone();
-                let roots = if agent == "workbuddy" {
-                    [
+                let entries = match agent {
+                    "antigravity" => Some([
+                        ("antigravity", "Antigravity App", &self.antigravity),
+                        ("antigravityCli", "Antigravity CLI", &self.antigravity_cli),
+                        ("antigravityIde", "Antigravity IDE", &self.antigravity_ide),
+                    ]),
+                    "workbuddy" => Some([
                         ("workbuddy", "WorkBuddy", &self.workbuddy),
                         ("workbuddyAi", "WorkBuddy AI", &self.workbuddy_ai),
                         ("workbuddyCli", "CodeBuddy Code CLI", &self.workbuddy_cli),
-                    ]
+                    ]),
+                    _ => None,
+                };
+                let roots = entries
                     .into_iter()
+                    .flatten()
                     .map(|(key, label, custom)| {
                         let root = self.resolved(key)?;
                         Ok(AgentSourceRoot {
                             setting_key: key.into(),
                             label: label.into(),
-                            available: super::workbuddy::has_transcripts(&root),
+                            available: if agent == "antigravity" {
+                                super::antigravity::has_transcripts(&root)
+                            } else {
+                                super::workbuddy::has_transcripts(&root)
+                            },
                             path: root.to_string_lossy().into_owned(),
                             custom_path: custom.clone(),
                         })
                     })
-                    .collect::<AppResult<Vec<_>>>()?
-                } else {
-                    Vec::new()
-                };
+                    .collect::<AppResult<Vec<_>>>()?;
                 let available = match agent {
                     "codex" => {
                         path.join("sessions").is_dir() || path.join("state_5.sqlite").is_file()
                     }
                     "claude" => path.join("projects").is_dir(),
                     "dsh" => path.join("sessions").is_dir() || path.is_dir(),
-                    "workbuddy" => roots.iter().any(|root| root.available),
+                    "zcode" => super::zcode::database_path(&path).is_file(),
+                    "workbuddy" | "antigravity" => roots.iter().any(|root| root.available),
                     _ => {
                         path.is_file()
                             || path.join("storage").is_dir()
@@ -198,6 +264,14 @@ impl SourceSettings {
                 })
             })
             .collect()
+    }
+
+    fn antigravity_paths(&self) -> AppResult<[PathBuf; 3]> {
+        Ok([
+            self.resolved("antigravity")?,
+            self.resolved("antigravityCli")?,
+            self.resolved("antigravityIde")?,
+        ])
     }
 
     fn workbuddy_paths(&self) -> AppResult<[PathBuf; 3]> {
@@ -228,11 +302,20 @@ impl MultiAgentSource {
     fn discover(&self) -> AppResult<ChangePlan> {
         let settings = self.settings.read();
         let mut plan = ChangePlan::default();
-        for agent in ["claude", "opencode", "dsh", "workbuddy"] {
+        for agent in [
+            "claude",
+            "opencode",
+            "dsh",
+            "workbuddy",
+            "zcode",
+            "antigravity",
+        ] {
             let root = settings.resolved(agent)?;
             let discovery = match agent {
                 "claude" => claude_files(&root),
                 "dsh" => super::dsh::discover(&root),
+                "antigravity" => super::antigravity::discover(&settings.antigravity_paths()?),
+                "zcode" => super::zcode::discover(&root),
                 "workbuddy" => super::workbuddy::discover(&settings.workbuddy_paths()?),
                 _ => super::opencode::discover(&root),
             };
@@ -284,9 +367,16 @@ impl UsageSource for MultiAgentSource {
 
     fn plan(&self, checkpoints: &[SourceCheckpoint]) -> AppResult<ChangePlan> {
         let is_external = |key: &str| {
-            ["claude:", "opencode:", "dsh:", "workbuddy:"]
-                .iter()
-                .any(|prefix| key.starts_with(prefix))
+            [
+                "claude:",
+                "opencode:",
+                "dsh:",
+                "workbuddy:",
+                "zcode:",
+                "antigravity:",
+            ]
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
         };
         let codex_checkpoints: Vec<_> = checkpoints
             .iter()
@@ -364,6 +454,10 @@ impl UsageSource for MultiAgentSource {
             super::opencode::stream(change, sink, cancel)
         } else if change.source_key.starts_with("dsh:") {
             super::dsh::stream(change, sink, cancel)
+        } else if change.source_key.starts_with("antigravity:") {
+            super::antigravity::stream(change, &self.settings().antigravity_paths()?, sink, cancel)
+        } else if change.source_key.starts_with("zcode:") {
+            super::zcode::stream(change, sink, cancel)
         } else if change.source_key.starts_with("workbuddy:") {
             let settings = self.settings();
             super::workbuddy::stream(change, &settings.workbuddy_paths()?, sink, cancel)

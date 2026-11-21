@@ -1,6 +1,7 @@
 pub mod agents;
 #[cfg(test)]
 mod agents_tests;
+mod antigravity;
 mod claude;
 mod dsh;
 mod jsonl;
@@ -10,6 +11,7 @@ mod opencode;
 mod state_db;
 pub(crate) mod user_wait;
 mod workbuddy;
+mod zcode;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::Metadata;

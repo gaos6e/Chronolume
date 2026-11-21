@@ -43,9 +43,17 @@ pub fn run() {
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             let expected_pricing_marker = BUILTIN_PRICING_REVISION.to_string();
             if pricing_marker.as_deref() != Some(expected_pricing_marker.as_str()) {
-                store
-                    .refresh_official_pricing_sources()
-                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
+                // The November 17 catalog introduced request-level brackets. Later
+                // flat-rate additions can be priced from permanent token summaries.
+                if pricing_marker
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0)
+                    < 2_026_111_701
+                {
+                    store
+                        .refresh_official_pricing_sources()
+                        .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
+                }
                 store
                     .reprice_all(timezone)
                     .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;

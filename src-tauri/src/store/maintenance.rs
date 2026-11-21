@@ -1,6 +1,7 @@
 use chrono::Utc;
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
+use uuid::Uuid;
 
 use super::UsageStore;
 use crate::error::{AppError, AppResult};
@@ -57,6 +58,13 @@ impl UsageStore {
     }
 
     fn clear_index_tables(&self, clear_sync_history: bool) -> AppResult<()> {
+        // A live SQLite snapshot includes committed WAL data. A plain file copy
+        // can silently omit the newest imported sessions.
+        self.backup_database(if clear_sync_history {
+            "clear"
+        } else {
+            "reindex"
+        })?;
         self.with_writer(|transaction| {
             for table in [
                 "daily_tool_rollups",
@@ -82,6 +90,56 @@ impl UsageStore {
         self.with_reader(|connection| {
             connection.execute_batch("PRAGMA wal_checkpoint(PASSIVE)")?;
             Ok(())
+        })
+    }
+
+    fn backup_database(&self, reason: &str) -> AppResult<()> {
+        let backup = || -> AppResult<()> {
+            let directory = self
+                .path
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .ok_or_else(AppError::filesystem)?
+                .join("backups");
+            std::fs::create_dir_all(&directory)?;
+            let path = directory.join(format!(
+                "chronolume-{}-{reason}-{}.sqlite3",
+                Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+                Uuid::new_v4()
+            ));
+            // Reserve a unique, empty target; VACUUM INTO never overwrites an
+            // existing backup. Only a fully written and checked snapshot is kept.
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            drop(file);
+            let result = (|| -> AppResult<()> {
+                self.with_reader(|connection| {
+                    connection.execute("VACUUM main INTO ?1", [path.to_string_lossy()])?;
+                    Ok(())
+                })?;
+                let snapshot = rusqlite::Connection::open_with_flags(
+                    &path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )?;
+                let check: String =
+                    snapshot.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
+                if check != "ok" {
+                    return Err(AppError::database());
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = std::fs::remove_file(&path);
+            }
+            result
+        };
+        backup().map_err(|_| {
+            AppError::new(
+                "database_backup_failed",
+                "数据库备份失败，未执行重新索引或清空",
+            )
         })
     }
 
@@ -122,12 +180,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clearing_analysis_never_touches_source_files_or_prices() {
+    fn clearing_analysis_backs_up_wal_and_keeps_sources_prices_and_settings() {
         let source_directory = tempfile::tempdir().unwrap();
         let source_path = source_directory.path().join("rollout.jsonl");
         std::fs::write(&source_path, b"private source remains").unwrap();
-        let store = UsageStore::open_in_memory().unwrap();
+        let database_directory = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(database_directory.path().join("usage.sqlite3")).unwrap();
         store.seed_builtin_prices().unwrap();
+        store.save_app_setting("test-setting", "\"kept\"").unwrap();
         store
             .with_writer(|transaction| {
                 transaction.execute(
@@ -145,7 +205,52 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        // Pin a reader at the old snapshot so the session insert remains in WAL.
+        let reader = store.connection().unwrap();
+        reader
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); BEGIN; SELECT COUNT(*) FROM sessions;")
+            .unwrap();
+        store
+            .with_writer(|transaction| {
+                transaction.execute("UPDATE sessions SET total_tokens=12345 WHERE id='s'", [])?;
+                Ok(())
+            })
+            .unwrap();
         store.clear_analysis().unwrap();
+        let backups: Vec<_> = std::fs::read_dir(database_directory.path().join("backups"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(
+            backups[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("-clear-")
+        );
+        let snapshot = rusqlite::Connection::open_with_flags(
+            &backups[0],
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let tokens: i64 = snapshot
+            .query_row(
+                "SELECT total_tokens FROM sessions WHERE id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tokens, 12345);
+        let setting: String = snapshot
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key='test-setting'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(setting, "\"kept\"");
+        reader.execute_batch("ROLLBACK").unwrap();
         assert_eq!(
             std::fs::read(&source_path).unwrap(),
             b"private source remains"
@@ -162,5 +267,58 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        assert_eq!(
+            store.app_setting("test-setting").unwrap().as_deref(),
+            Some("\"kept\"")
+        );
+        store.clear_analysis().unwrap();
+        assert_eq!(
+            std::fs::read_dir(database_directory.path().join("backups"))
+                .unwrap()
+                .count(),
+            2
+        );
+        assert_eq!(
+            snapshot
+                .query_row(
+                    "SELECT total_tokens FROM sessions WHERE id='s'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            12345
+        );
+    }
+
+    #[test]
+    fn backup_failure_aborts_both_clear_and_reindex_without_deleting_records() {
+        for clear in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = UsageStore::open(directory.path().join("usage.sqlite3")).unwrap();
+            store.with_writer(|transaction| {
+                transaction.execute("INSERT INTO workspaces(id,normalized_path,display_name,created_at_ms,updated_at_ms) VALUES ('w','C:/repo','repo',0,0)", [])?;
+                transaction.execute("INSERT INTO sessions(id,workspace_id,synthetic_title,total_tokens,parser_version,updated_at_ms) VALUES ('s','w','Session',123,11,0)", [])?;
+                Ok(())
+            }).unwrap();
+            // A file at the backup-directory path deterministically blocks backup.
+            std::fs::write(directory.path().join("backups"), b"blocked").unwrap();
+            let result = if clear {
+                store.clear_analysis()
+            } else {
+                store.reset_index()
+            };
+            assert_eq!(result.unwrap_err().code, "database_backup_failed");
+            store
+                .with_reader(|connection| {
+                    let tokens: i64 = connection.query_row(
+                        "SELECT total_tokens FROM sessions WHERE id='s'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(tokens, 123);
+                    Ok(())
+                })
+                .unwrap();
+        }
     }
 }

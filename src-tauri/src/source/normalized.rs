@@ -10,6 +10,13 @@ use crate::activity::{ToolInvocation, classify};
 use crate::error::{AppError, AppResult};
 use crate::pricing::{canonical_model_name, normalize_model_id};
 
+pub(super) fn recorded_model(model: &str) -> bool {
+    let model = model.trim();
+    !model.is_empty()
+        && !model.eq_ignore_ascii_case("unknown")
+        && !model.eq_ignore_ascii_case("(unknown)")
+}
+
 #[derive(Debug, Default, Clone)]
 pub(super) struct Tokens {
     pub fresh: u64,
@@ -37,7 +44,7 @@ impl Message {
     /// Streaming transcripts can repeat a message with increasingly complete usage.
     pub fn merge(&mut self, next: Self) {
         self.timestamp = self.timestamp.min(next.timestamp);
-        if self.model == "unknown" && next.model != "unknown" {
+        if !recorded_model(&self.model) && recorded_model(&next.model) {
             self.model = next.model;
         }
         if self.provider == "unknown" && next.provider != "unknown" {
@@ -131,14 +138,16 @@ impl Snapshot {
             check_cancel(cancel)?;
             let ordinal = index as u64 + 1;
             let pricing_id = normalize_model_id(&message.model).exact;
-            emit(ParsedRecord::ModelChanged(ModelChanged {
-                byte_offset: ordinal,
-                event_ordinal: ordinal,
-                occurred_at_ms: Some(message.timestamp),
-                model_provider: message.provider.clone(),
-                model_raw: message.model.clone(),
-                pricing_model_id: pricing_id.clone(),
-            }))?;
+            if message.tokens.is_some() || recorded_model(&message.model) {
+                emit(ParsedRecord::ModelChanged(ModelChanged {
+                    byte_offset: ordinal,
+                    event_ordinal: ordinal,
+                    occurred_at_ms: Some(message.timestamp),
+                    model_provider: message.provider.clone(),
+                    model_raw: message.model.clone(),
+                    pricing_model_id: pricing_id.clone(),
+                }))?;
+            }
             if let Some(tokens) = message.tokens {
                 let input = tokens
                     .fresh

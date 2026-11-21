@@ -67,6 +67,7 @@ export function DataPage() {
     </section>
     <section className="feature-card">
       <div className="feature-card-heading"><div><span>MAINTENANCE</span><h2>{t('索引维护')}</h2></div></div>
+      <p className="form-hint">{t('修复索引保留正常记录，仅重试异常来源。重新索引和清空前自动备份到分析目录的 backups 文件夹；备份失败则不执行。')}</p>
       <div className="maintenance-actions">
         <button type="button" className="primary-button" disabled={maintenanceDisabled} onClick={() => { clear.reset(); refresh.mutate('incremental'); }}><RefreshCw />{t('增量同步')}</button>
         <button type="button" className="quiet-button" disabled={maintenanceDisabled} onClick={() => { clear.reset(); refresh.mutate('repair'); }}><ShieldCheck />{t('修复索引')}</button>
@@ -75,7 +76,7 @@ export function DataPage() {
       </div>
       {syncing && <p className="form-hint" role="status">{t('索引正在运行。请等待完成，或在上方取消后再执行维护操作。')}</p>}
       <QueryStatus loading={false} error={sync.error} onRetry={() => void sync.refetch()} />
-      <ActionFeedback pending={refresh.isPending} error={refresh.error} success={clear.isSuccess ? '分析库已清空，可重新同步恢复统计。' : refresh.isSuccess && '同步请求已提交，可在上方查看进度。'} />
+      <ActionFeedback pending={refresh.isPending} error={refresh.error} success={clear.isSuccess ? '分析库已清空，备份已保存到 backups 文件夹。' : refresh.isSuccess && '同步请求已提交，可在上方查看进度。'} />
       <p className="privacy-note">
         <span>{t('这些操作只写入 Chronolume 分析目录：')}</span>
         <code>{bootstrap.data?.dataDirectory ?? '—'}</code>
@@ -90,7 +91,7 @@ export function DataPage() {
     </section>
     {confirmingClear && <Dialog className="confirm-dialog" label={t('清空分析库')} busy={clear.isPending} onClose={() => setConfirmingClear(false)}>
       <h2>{t('清空分析库')}</h2>
-      <p>{t('仅清空 Chronolume 分析库。所有 agent 的原始数据、价格和设置均保留。是否继续？')}</p>
+      <p>{t('先备份当前数据库，再清空 Chronolume 分析库。所有 agent 的原始数据、价格和设置均保留；重新同步只能导入仍存在的源记录。是否继续？')}</p>
       <ActionFeedback pending={clear.isPending} error={clear.error} />
       <div className="dialog-actions"><button type="button" autoFocus data-autofocus className="quiet-button" disabled={clear.isPending} onClick={() => setConfirmingClear(false)}>{t('取消')}</button><button type="button" className="danger-button" disabled={clear.isPending || syncing} onClick={() => clear.mutate()}>{t('确认清空')}</button></div>
     </Dialog>}

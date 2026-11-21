@@ -50,7 +50,7 @@ const emptySyncStatus: SyncStatus = {
 export async function getBootstrapStatus(): Promise<BootstrapStatus> {
   if (!isTauriRuntime()) {
     return {
-      appVersion: '2.3.3-dev',
+      appVersion: '2.4.0-dev',
       platform: 'browser',
       dataDirectory: '浏览器预览模式',
       databasePath: '浏览器预览模式',
@@ -104,7 +104,7 @@ export async function getDashboard(filters: UsageFilters): Promise<DashboardSnap
         longestActiveStreakDays: 0,
       },
       trend: [],
-      filterOptions: { workspaces: [], providers: [], models: [] },
+      filterOptions: { workspaces: [], providers: [], models: [], vendors: [] },
       dataState: 'empty',
       generatedAtMs: Date.now(),
     };
@@ -166,8 +166,9 @@ export async function getUsageEvents(
   sessionId: string,
   page: number,
   pageSize = 100,
+  modelVendors?: string[],
 ): Promise<Page<UsageEventRow>> {
-  return invoke<Page<UsageEventRow>>('get_usage_events', { sessionId, page, pageSize });
+  return invoke<Page<UsageEventRow>>('get_usage_events', { sessionId, page, pageSize, modelVendors });
 }
 
 export async function getDiagnostics(): Promise<DiagnosticsSnapshot> {

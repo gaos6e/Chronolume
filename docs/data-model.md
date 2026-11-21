@@ -2,7 +2,7 @@
 
 v2 分析数据库在 Windows 位于 `%LOCALAPPDATA%\Chronolume\v2\chronolume-v2.sqlite3`，在 macOS 位于 `~/Library/Application Support/Chronolume/v2/chronolume-v2.sqlite3`。数据库仅存结构化统计和恢复索引所需元数据，不存会话正文、工具参数、命令或代码。Windows 保留 2.0.1 的旧品牌数据库/WAL sidecar 迁移；macOS 从不探测或迁移 Windows 历史目录。
 
-工作区显示路径保留 各 agent 记录中的可读形式。Windows 继续使用原有斜杠规范化和 ASCII 大小写不敏感哈希，避免已有 ID 改变；macOS 对已存在路径只读 `canonicalize`，由实际卷决定大小写语义并合并符号链接，无法规范化或不存在的路径按原大小写保守区分。该过程不会向工作区写入探测文件。
+工作区按 agent 和路径独立标识，显示路径保留来源记录的可读形式。Windows 统一斜杠，按 ASCII 大小写不敏感的路径计算哈希。macOS 对现有路径只读调用 `canonicalize`，按实际卷的大小写规则解析符号链接。无法解析的路径保留原大小写。
 
 | 表 | 保留期 | 主要职责 |
 | --- | --- | --- |
@@ -45,3 +45,11 @@ Schema 7 将已确认的同一模型历史别名统一为 `gpt-6.1-sol`。迁移
 
 
 Schema 9 为第五个 agent `workbuddy` 扩展生成列与日汇总约束，保留已有数据及设置。两个桌面版本共享原生会话命名空间，来源状态按合并会话管理；Token 从 transcript 原生请求读取，数据库的上下文占用和积分不进入费用。WorkBuddy 不创建估算活跃片段，查询响应使用 `activeTimingAvailable` 区分缺失计时；CSV 计时留空，JSON 导出将缺失的计时字段设为 `null`。
+
+Schema 11 增加 `zcode` 的会话命名空间、生成列和日汇总约束，保留已有明细、永久汇总、价格与设置。Z Code 请求用量、工具调用及轮次首字延迟分别来自原生账本，不重复累加轮次 Token；活跃时间仅使用原生请求和工具区间，缺失计时沿用 `activeTimingAvailable` 与空值导出约定。
+
+Schema 12 将 `antigravity:` 会话纳入来源生成列和日汇总约束。桌面版、CLI 和 IDE 使用同一来源与会话命名空间，三份目录设置独立保存。
+
+Schema 13 将思考档位归到基础模型，迁移覆盖历史事件、会话、同步检查点和永久汇总。多个档位共享一个模型时，同一会话只计一次，缓存命中率由合并后的 Token 数计算。价格冲突优先保留最近的用户编辑。
+
+Schema 14 按 agent 拆分历史工作区，依据会话、每日用量和工具摘要确定每条记录的归属。Codex 沿用原工作区 ID，其他来源在原 ID 前加上 agent 标识。拆分后的工作区继承原别名、忽略状态和显示选择，之后可以分别修改。没有任何会话或摘要可确定来源的旧工作区保留在 Codex 下。迁移使用本地分析库，无需重扫日志。

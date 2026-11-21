@@ -1,17 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Chronolume">
   <defs>
-    <linearGradient id="bg" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#303b68"/>
-      <stop offset="1" stop-color="#101522"/>
+    <linearGradient id="bg" x1="52" y1="468" x2="460" y2="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38212b"/>
+      <stop offset="1" stop-color="#813247"/>
     </linearGradient>
-    <linearGradient id="arc" x1="130" y1="360" x2="388" y2="145" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#70e0b7"/>
-      <stop offset="1" stop-color="#8fa5ff"/>
+    <linearGradient id="arc" x1="106" y1="413" x2="365" y2="87" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c92140"/>
+      <stop offset=".45" stop-color="#ff514e"/>
+      <stop offset="1" stop-color="#ffe0ce"/>
+    </linearGradient>
+    <linearGradient id="hand" x1="240" y1="284" x2="432" y2="76" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ef3049"/>
+      <stop offset=".55" stop-color="#ff7665"/>
+      <stop offset="1" stop-color="#fff1e5"/>
     </linearGradient>
   </defs>
-  <rect x="20" y="20" width="472" height="472" rx="116" fill="url(#bg)"/>
-  <rect x="21" y="21" width="470" height="470" rx="115" fill="none" stroke="#aab8ff" stroke-opacity=".24" stroke-width="2"/>
-  <path d="M116 326c42-98 91-142 148-133 45 7 56 59 98 45 17-6 30-20 42-42" fill="none" stroke="url(#arc)" stroke-width="34" stroke-linecap="round"/>
-  <circle cx="116" cy="326" r="22" fill="#70e0b7"/>
-  <circle cx="404" cy="196" r="22" fill="#8fa5ff"/>
+  <rect width="512" height="512" rx="122" fill="url(#bg)"/>
+  <path d="M359 96 A194 194 0 1 0 436 333 L364 304 A116 116 0 1 1 318 162 Z" fill="url(#arc)"/>
+  <path d="M240 284 L432 76 V148 Z" fill="url(#hand)"/>
 </svg>

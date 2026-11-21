@@ -4,6 +4,8 @@ export const agents = [
   { id: 'opencode', label: 'OpenCode', detail: '多提供方会话与工具活动' },
   { id: 'dsh', label: 'DeepSeek Harness', detail: '原生用量、缓存与工作节奏' },
   { id: 'workbuddy', label: 'WorkBuddy', detail: '桌面版与 CLI 的原生用量' },
+  { id: 'zcode', label: 'Z Code', detail: '原生用量、工具与请求计时' },
+  { id: 'antigravity', label: 'Google Antigravity', detail: '桌面版、CLI 与 IDE 的会话用量' },
 ] as const;
 
 export type AgentId = typeof agents[number]['id'];

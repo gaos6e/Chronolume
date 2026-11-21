@@ -45,7 +45,7 @@ describe('ActivityHeatmap', () => {
           maxValue: 1, points: [{ date: '2026-07-11', value: 1, sessionCount: 1, totalTokens: 1, activeMs: 1 }],
         }}
       />);
-      expect(screen.getByRole('region', { name: /拖动查看更早日期/ })).toHaveProperty('scrollLeft', 300);
+      expect(screen.getByRole('region', { name: '活跃热力图' })).toHaveProperty('scrollLeft', 300);
     } finally {
       scrollWidth.mockRestore();
       clientWidth.mockRestore();
@@ -68,11 +68,7 @@ describe('ActivityHeatmap', () => {
     />);
 
     const cells = screen.getAllByRole('img');
-    expect(cells.map((cell) => [...cell.classList])).toEqual([
-      expect.arrayContaining(['metric-tokens', 'level-1']),
-      expect.arrayContaining(['metric-tokens', 'level-2']),
-      expect.arrayContaining(['metric-tokens', 'level-3']),
-      expect.arrayContaining(['metric-tokens', 'level-4']),
-    ]);
+    expect(cells[0].closest('section')).toHaveClass('metric-tokens');
+    cells.forEach((cell, index) => expect(cell).toHaveClass(`level-${index + 1}`));
   });
 });

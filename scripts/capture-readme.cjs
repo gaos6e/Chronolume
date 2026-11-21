@@ -78,7 +78,7 @@ async (page) => {
       return values;
     };
     const workspaces = workspaceSeeds.map(([id, label, normalizedPath], i) => ({
-      id, label, normalizedPath, ignored: false,
+      id, label: `Codex-${label}`, agent: 'codex', alias: null, normalizedPath, ignored: false,
       sessionCount: distribute('sessionCount')[i], totalTokens: distribute('totalTokens')[i],
       estimatedCostMicrousd: distribute('estimatedCostMicrousd')[i], unpricedEventCount: 0,
       activeMs: distribute('activeMs')[i], activeDays: activeDays - i * 2, lastActivityAtMs: now - i * day,
@@ -138,12 +138,12 @@ async (page) => {
         if (command === 'plugin:window|set_theme') return;
         if (command === 'get_bootstrap_status') return { appVersion: '2.1.9 · DEMO', platform: 'windows', dataDirectory: 'D:/Demo/Chronolume', databasePath: 'D:/Demo/Chronolume/demo.sqlite3', databaseSizeBytes: 9_830_400, schemaVersion: 1 };
         if (command === 'get_app_preferences') return { idleGapMinutes: 30, visibleWorkspaceIds: workspaces.map((item) => item.id) };
-        if (command === 'get_workspace_catalog') return workspaces.map((item) => ({ value: item.id, label: item.label, normalizedPath: item.normalizedPath }));
+        if (command === 'get_workspace_catalog') return workspaces.map((item) => ({ value: item.id, label: item.label, agent: item.agent, normalizedPath: item.normalizedPath }));
         if (command === 'get_sync_status') return syncStatus;
         if (command === 'get_dashboard') return {
           resolvedRange: { startMs: trend[0].timestampMs, endMs: now, startLocalDate: date(trend[0].timestampMs), endLocalDate: date(now), calendarDays: 30, granularity: 'day' },
           hero, trend, dataState: 'complete', generatedAtMs: now,
-          filterOptions: { workspaces: workspaces.map((item) => ({ value: item.id, label: item.label })), providers: [{ value: 'openai', label: 'OpenAI' }], models: models.map((item) => ({ value: item.model, label: item.model })) },
+          filterOptions: { workspaces: workspaces.map((item) => ({ value: item.id, label: item.label, agent: item.agent })), providers: [{ value: 'openai', label: 'OpenAI' }], models: models.map((item) => ({ value: item.model, label: item.model })) },
         };
         if (command === 'get_heatmap') return { metric: args.query.metric, span: args.query.span, startDate: heatmapPoints[0].date, endDate: date(now), maxValue: Math.max(...heatmapPoints.map((point) => point.value)), points: heatmapPoints };
         if (command === 'get_workspaces') return list(workspaces, args.query);

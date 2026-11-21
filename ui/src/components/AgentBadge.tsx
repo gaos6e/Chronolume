@@ -1,8 +1,8 @@
-import { Asterisk, Command, SquareTerminal, Waves, Bot } from 'lucide-react';
+import { Asterisk, Command, SquareTerminal, Waves, Bot, Zap, Orbit } from 'lucide-react';
 import { agentLabel } from '../lib/agents';
 
 export function AgentMark({ agent }: { agent?: string }) {
-  const Icon = agent === 'claude' ? Asterisk : agent === 'opencode' ? Command : agent === 'dsh' ? Waves : agent === 'workbuddy' ? Bot : SquareTerminal;
+  const Icon = agent === 'claude' ? Asterisk : agent === 'opencode' ? Command : agent === 'dsh' ? Waves : agent === 'workbuddy' ? Bot : agent === 'zcode' ? Zap : agent === 'antigravity' ? Orbit : SquareTerminal;
   return <Icon className={`agent-mark ${agent ?? 'codex'}`} aria-hidden="true" />;
 }
 

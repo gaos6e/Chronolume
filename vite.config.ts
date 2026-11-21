@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   root: path.resolve(__dirname, 'ui'),
+  publicDir: path.resolve(__dirname, 'assets'),
   plugins: [react(), tailwindcss()],
   clearScreen: false,
   server: {

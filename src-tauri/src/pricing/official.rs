@@ -1,6 +1,6 @@
 //! Audited vendor snapshots. Rate brackets are separate pricing IDs so permanent
 //! summaries retain the request's bracket after event retention and repricing.
-use std::sync::OnceLock;
+use std::{collections::HashMap, sync::OnceLock};
 
 use chrono::{Datelike, Timelike, Utc};
 use serde::Deserialize;
@@ -53,11 +53,28 @@ pub(super) fn model(provider: &str, id: &str) -> Option<&'static OfficialModel> 
         .find(|m| m.provider == provider && m.id == base)
 }
 
-pub(super) fn alias(id: &str) -> Option<String> {
-    models()
-        .iter()
-        .find(|m| m.aliases.iter().any(|a| a == id))
-        .map(|m| m.id.clone())
+pub(super) fn identity(id: &str) -> Option<&'static str> {
+    static IDENTITIES: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    IDENTITIES
+        .get_or_init(|| {
+            models()
+                .iter()
+                .flat_map(|model| {
+                    std::iter::once(&model.id)
+                        .chain(&model.aliases)
+                        .map(|alias| (alias.as_str(), model.id.as_str()))
+                })
+                .chain([
+                    ("nemotron-3.5-super-vl", "nemotron-3.5-super-vl-120b-a12b"),
+                    ("nemotron-3-ultra", "nemotron-3-ultra-550b-a55b"),
+                    // xAI shipped these as distinct model families.
+                    ("grok-4-fast", "grok-4-fast"),
+                    ("grok-4-1-fast", "grok-4-1-fast"),
+                ])
+                .collect()
+        })
+        .get(id)
+        .copied()
 }
 
 pub(super) fn prices() -> Vec<ModelPrice> {
@@ -89,6 +106,16 @@ pub(super) fn prices() -> Vec<ModelPrice> {
         }
     }
     prices
+}
+
+pub fn cache_read_known(provider: &str, id: &str) -> bool {
+    model(provider, id).is_none_or(|model| {
+        id.split_once('@')
+            .and_then(|(_, suffix)| model.tiers.iter().find(|tier| tier.suffix == suffix))
+            .map_or(&model.rates, |tier| &tier.rates)
+            .read
+            .is_some()
+    })
 }
 
 pub(super) fn tier_id(
@@ -146,23 +173,12 @@ pub fn source(provider: &str) -> &'static str {
         "moonshotai" => "https://platform.kimi.ai/",
         "alibaba" => "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
         "xai" => "https://docs.x.ai/developers/pricing",
-        "opencode" => "https://opencode.ai/v2/docs/console/models/",
         _ => super::OFFICIAL_PRICING_SOURCE,
     }
 }
 
 pub fn price_source(provider: &str, id: &str) -> &'static str {
     model(provider, id).map_or_else(|| source(provider), |model| model.source_url.as_str())
-}
-
-pub fn cache_read_known(provider: &str, id: &str) -> bool {
-    model(provider, id).is_none_or(|model| {
-        id.split_once('@')
-            .and_then(|(_, suffix)| model.tiers.iter().find(|tier| tier.suffix == suffix))
-            .map_or(&model.rates, |tier| &tier.rates)
-            .read
-            .is_some()
-    })
 }
 
 pub fn snapshot_ms(provider: &str, id: &str) -> i64 {
@@ -190,48 +206,4 @@ pub fn description(provider: &str, id: &str) -> Option<String> {
         || model.note.clone(),
         |t| format!("{} · {}", t.label, model.note),
     ))
-}
-
-/// This identifies a vendor only; a price still requires an exact catalog match.
-pub(super) fn vendor(id: &str) -> Option<&'static str> {
-    if id.starts_with("gpt-")
-        || id.starts_with("o1")
-        || id.starts_with("o3")
-        || id.starts_with("o4")
-    {
-        Some("openai")
-    } else if id.starts_with("claude-") {
-        Some("anthropic")
-    } else if id.starts_with("deepseek-") && !id.ends_with("-free") {
-        Some("deepseek")
-    } else if id.starts_with("gemini-") {
-        Some("google")
-    } else if id.starts_with("glm-") && !id.ends_with("-free") {
-        Some("zai")
-    } else if id.starts_with("minimax-") {
-        Some("minimax")
-    } else if id.starts_with("kimi-") {
-        Some("moonshotai")
-    } else if id.starts_with("qwen") {
-        Some("alibaba")
-    } else if id.starts_with("grok-") {
-        Some("xai")
-    } else if id == "hy4-flash" {
-        Some("tencent")
-    } else {
-        None
-    }
-}
-
-pub(super) fn provider_alias(provider: &str) -> &str {
-    match provider {
-        "deepseek-official" => "deepseek",
-        "google-generative-ai" | "google-vertex" => "google",
-        "z-ai" | "zhipu" => "zai",
-        "moonshot" | "kimi" => "moonshotai",
-        "dashscope" | "qwen" => "alibaba",
-        "x-ai" => "xai",
-        "opencode-zen" => "opencode",
-        _ => provider,
-    }
 }

@@ -144,9 +144,15 @@ pub fn get_usage_events(
     session_id: String,
     page: u32,
     page_size: u32,
+    model_vendors: Option<Vec<String>>,
     state: State<'_, RuntimeState>,
 ) -> AppResult<Page<UsageEventRow>> {
-    state.query.usage_events(&session_id, page, page_size)
+    state.query.usage_events(
+        &session_id,
+        page,
+        page_size,
+        model_vendors.as_deref().unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -167,20 +173,11 @@ pub fn update_workspace_settings(
 }
 
 #[tauri::command]
-pub fn clear_analysis(state: State<'_, RuntimeState>) -> AppResult<()> {
-    if matches!(
-        state.indexer.status().phase,
-        crate::indexer::SyncPhase::Detecting
-            | crate::indexer::SyncPhase::Planning
-            | crate::indexer::SyncPhase::Importing
-            | crate::indexer::SyncPhase::RollingUp
-    ) {
-        return Err(AppError::new(
-            "sync_in_progress",
-            "请先取消并等待当前同步停止",
-        ));
-    }
-    state.store.clear_analysis()
+pub async fn clear_analysis(state: State<'_, RuntimeState>) -> AppResult<()> {
+    let indexer = Arc::clone(&state.indexer);
+    tauri::async_runtime::spawn_blocking(move || indexer.clear_analysis())
+        .await
+        .map_err(|_| AppError::new("maintenance_worker_failed", "后台维护任务异常退出"))?
 }
 
 #[tauri::command]

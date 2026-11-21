@@ -21,7 +21,7 @@ export function QueryStatus({
     <section className="state-card error-state" role="alert">
       <strong>{t('无法读取页面数据')}</strong>
       <p>{errorMessage(error)}</p>
-      <button type="button" onClick={onRetry}>{t('重试查询')}</button>
+      <button type="button" className="quiet-button" onClick={onRetry}>{t('重试查询')}</button>
     </section>
   );
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Area,
@@ -35,12 +35,12 @@ interface SeriesDefinition {
 }
 
 const SERIES: SeriesDefinition[] = [
-  { key: 'freshInputTokens', label: '新增输入', color: '#6c8cff', gradient: 'inputGradient' },
-  { key: 'outputTokens', label: '输出', color: '#45d6a4', gradient: 'outputGradient' },
-  { key: 'cachedInputTokens', label: '缓存读取', color: '#a57cff', gradient: 'cachedGradient' },
-  { key: 'cacheWriteTokens', label: '缓存写入', color: '#4eacae', gradient: 'writeGradient' },
-  { key: 'reasoningTokens', label: '推理', color: '#f1a35b', gradient: 'reasoningGradient' },
-  { key: 'estimatedCostMicrousd', label: '估算成本', color: '#f06b78', cost: true },
+  { key: 'freshInputTokens', label: '新增输入', color: 'var(--series-input)', gradient: 'inputGradient' },
+  { key: 'outputTokens', label: '输出', color: 'var(--series-output)', gradient: 'outputGradient' },
+  { key: 'cachedInputTokens', label: '缓存读取', color: 'var(--series-cache)', gradient: 'cachedGradient' },
+  { key: 'cacheWriteTokens', label: '缓存写入', color: 'var(--series-write)', gradient: 'writeGradient' },
+  { key: 'reasoningTokens', label: '推理', color: 'var(--series-reasoning)', gradient: 'reasoningGradient' },
+  { key: 'estimatedCostMicrousd', label: '估算成本', color: 'var(--series-cost)', cost: true },
 ];
 
 export function buildChartData(
@@ -97,13 +97,15 @@ interface UsageTrendChartProps {
   granularity: ResolvedRange['granularity'];
 }
 
-export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
+export const UsageTrendChart = memo(function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
   const { t, i18n } = useTranslation();
   const data = useMemo(() => buildChartData(trend, granularity), [trend, granularity, i18n.resolvedLanguage]);
   const [visible, setVisible] = useState<Set<TrendSeriesKey>>(() =>
     deserializeSeriesVisibility(readLocalPreference(storageKeys.trendSeries)),
   );
   const [tableOpen, setTableOpen] = useState(false);
+  const shownSeries = SERIES.filter((series) => visible.has(series.key));
+  const animate = trendAnimationEnabled();
 
   const handleToggle = (key: TrendSeriesKey) => {
     setVisible((current) => {
@@ -143,7 +145,7 @@ export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
       ) : (
         <div className="chart-wrap">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 14, right: 8, bottom: 0, left: 8 }}>
+            <AreaChart data={data} margin={{ top: 10, right: 8, bottom: 0, left: 8 }}>
               <defs>
                 {SERIES.filter((series) => series.gradient).map((series) => (
                   <linearGradient key={series.gradient} id={series.gradient} x1="0" y1="0" x2="0" y2="1">
@@ -163,20 +165,24 @@ export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
               <YAxis yAxisId="tokens" hide domain={[0, 'auto']} />
               <YAxis yAxisId="cost" hide orientation="right" domain={[0, 'auto']} />
               <Tooltip
-                cursor={{ stroke: 'rgba(159,176,255,.32)', strokeDasharray: '4 4' }}
+                cursor={{ stroke: 'var(--accent-border)', strokeDasharray: '4 4' }}
                 contentStyle={{
                   background: 'var(--chart-tooltip)',
                   border: '1px solid var(--chart-tooltip-border)',
                   borderRadius: 12,
-                  boxShadow: '0 18px 50px rgba(0,0,0,.35)',
+                  boxShadow: 'var(--shadow)',
+                  padding: '8px 10px',
+                  fontSize: '.8125rem',
+                  lineHeight: 1.35,
                 }}
-                labelStyle={{ color: 'var(--chart-tooltip-label)', marginBottom: 7 }}
+                itemStyle={{ padding: 0 }}
+                labelStyle={{ color: 'var(--chart-tooltip-label)', marginBottom: 4 }}
                 formatter={(value, name) => [
                   name === t('估算成本') ? formatCost(Number(value)) : formatExact(Number(value)),
                   name,
                 ]}
               />
-              {SERIES.map((series) => visible.has(series.key) && (
+              {shownSeries.map((series) => (
                 <Area
                   key={series.key}
                   yAxisId={series.cost ? 'cost' : 'tokens'}
@@ -187,7 +193,9 @@ export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
                   strokeWidth={2}
                   strokeDasharray={series.cost ? '6 5' : undefined}
                   fill={series.gradient ? `url(#${series.gradient})` : 'transparent'}
-                  isAnimationActive={trendAnimationEnabled()}
+                  isAnimationActive={animate}
+                  animationDuration={280}
+                  animationEasing="ease-out"
                   connectNulls={false}
                 />
               ))}
@@ -200,10 +208,10 @@ export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
           <summary>{t('查看图表数据')}</summary>
           {tableOpen && <div className="data-table-wrap" role="region" aria-label={t('用量趋势')} tabIndex={0}>
             <table className="data-table">
-              <thead><tr><th>{t('时间')}</th>{SERIES.filter((series) => visible.has(series.key)).map((series) => <th key={series.key}>{t(series.label)}</th>)}</tr></thead>
+              <thead><tr><th>{t('时间')}</th>{shownSeries.map((series) => <th key={series.key}>{t(series.label)}</th>)}</tr></thead>
               <tbody>{data.map((point) => <tr key={point.timestampMs}>
                 <td>{new Date(point.timestampMs).toLocaleString()}</td>
-                {SERIES.filter((series) => visible.has(series.key)).map((series) => <td key={series.key}>
+                {shownSeries.map((series) => <td key={series.key}>
                   {series.key === 'estimatedCostMicrousd' ? formatCost(point[series.key]) : formatExact(point[series.key] ?? 0)}
                 </td>)}
               </tr>)}</tbody>
@@ -213,4 +221,4 @@ export function UsageTrendChart({ trend, granularity }: UsageTrendChartProps) {
       )}
     </section>
   );
-}
+});

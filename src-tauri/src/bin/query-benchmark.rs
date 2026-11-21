@@ -69,6 +69,7 @@ fn filters(preset: RangePreset) -> UsageFilters {
         },
         workspace_id: None,
         model_provider: None,
+        model_vendors: Vec::new(),
         model: None,
         archived: ArchiveFilter::All,
     }

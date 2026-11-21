@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use chrono::Utc;
 use chrono_tz::Tz;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ use super::UsageStore;
 use crate::error::{AppError, AppResult};
 use crate::pricing::{
     BUILTIN_PRICING_REVISION, ModelPrice, OFFICIAL_PRICING_SOURCE, PriceQuote, PriceableTokens,
-    PricingCatalog, builtin_model_prices, canonical_model_provider,
+    PricingCatalog, builtin_model_prices, canonical_model_provider, canonical_pricing_id, official,
 };
 use crate::pricing_update::{TrustedPriceRow, official_display_name};
 
@@ -113,26 +113,29 @@ impl UsageStore {
                         source_url, source_updated_at_ms, created_at_ms, updated_at_ms
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?4, ?5, ?6, ?7,
                                1, 0, 0, 1, ?8, ?9, ?9, ?9)
-                     ON CONFLICT(provider, pricing_id) DO UPDATE SET
-                        display_name = excluded.display_name,
+                     ON CONFLICT(pricing_id) DO UPDATE SET
+                        provider = excluded.provider,
+                        display_name = CASE WHEN model_prices.is_builtin = 0 OR model_prices.is_overridden = 1
+                            THEN model_prices.display_name ELSE excluded.display_name END,
                         default_input_per_million_usd = excluded.default_input_per_million_usd,
                         default_output_per_million_usd = excluded.default_output_per_million_usd,
                         default_cache_read_per_million_usd = excluded.default_cache_read_per_million_usd,
                         default_cache_write_per_million_usd = excluded.default_cache_write_per_million_usd,
-                        input_per_million_usd = CASE WHEN model_prices.is_overridden = 0
+                        input_per_million_usd = CASE WHEN model_prices.is_builtin = 1 AND model_prices.is_overridden = 0
                             THEN excluded.input_per_million_usd ELSE model_prices.input_per_million_usd END,
-                        output_per_million_usd = CASE WHEN model_prices.is_overridden = 0
+                        output_per_million_usd = CASE WHEN model_prices.is_builtin = 1 AND model_prices.is_overridden = 0
                             THEN excluded.output_per_million_usd ELSE model_prices.output_per_million_usd END,
-                        cache_read_per_million_usd = CASE WHEN model_prices.is_overridden = 0
+                        cache_read_per_million_usd = CASE WHEN model_prices.is_builtin = 1 AND model_prices.is_overridden = 0
                             THEN excluded.cache_read_per_million_usd ELSE model_prices.cache_read_per_million_usd END,
-                        cache_write_per_million_usd = CASE WHEN model_prices.is_overridden = 0
+                        cache_write_per_million_usd = CASE WHEN model_prices.is_builtin = 1 AND model_prices.is_overridden = 0
                             THEN excluded.cache_write_per_million_usd ELSE model_prices.cache_write_per_million_usd END,
+                        is_overridden = (model_prices.is_builtin = 0 OR model_prices.is_overridden = 1),
                         is_builtin = 1, revision = model_prices.revision + 1,
                         source_url = excluded.source_url,
                         source_updated_at_ms = excluded.source_updated_at_ms,
                         updated_at_ms = excluded.updated_at_ms",
                     params![
-                        row.pricing_id,
+                        canonical_pricing_id(&row.pricing_id),
                         row.provider,
                         row.display_name,
                         row.input_per_million_usd,
@@ -167,24 +170,29 @@ impl UsageStore {
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?4, ?5, ?6, ?7,
                         1, 0, 0, ?8, ?9, ?10, ?11, ?11
                      )
-                     ON CONFLICT(provider, pricing_id) DO UPDATE SET
+                     ON CONFLICT(pricing_id) DO UPDATE SET
+                        provider = excluded.provider,
+                        display_name = CASE WHEN model_prices.is_builtin = 0 OR model_prices.is_overridden = 1
+                            THEN model_prices.display_name ELSE excluded.display_name END,
                         default_input_per_million_usd = excluded.default_input_per_million_usd,
                         default_output_per_million_usd = excluded.default_output_per_million_usd,
                         default_cache_read_per_million_usd = excluded.default_cache_read_per_million_usd,
                         default_cache_write_per_million_usd = excluded.default_cache_write_per_million_usd,
-                        input_per_million_usd = CASE WHEN model_prices.is_overridden = 0
+                        input_per_million_usd = CASE WHEN model_prices.is_builtin = 1 AND model_prices.is_overridden = 0
                             THEN excluded.input_per_million_usd ELSE model_prices.input_per_million_usd END,
-                        output_per_million_usd = CASE WHEN model_prices.is_overridden = 0
+                        output_per_million_usd = CASE WHEN model_prices.is_builtin = 1 AND model_prices.is_overridden = 0
                             THEN excluded.output_per_million_usd ELSE model_prices.output_per_million_usd END,
-                        cache_read_per_million_usd = CASE WHEN model_prices.is_overridden = 0
+                        cache_read_per_million_usd = CASE WHEN model_prices.is_builtin = 1 AND model_prices.is_overridden = 0
                             THEN excluded.cache_read_per_million_usd ELSE model_prices.cache_read_per_million_usd END,
-                        cache_write_per_million_usd = CASE WHEN model_prices.is_overridden = 0
+                        cache_write_per_million_usd = CASE WHEN model_prices.is_builtin = 1 AND model_prices.is_overridden = 0
                             THEN excluded.cache_write_per_million_usd ELSE model_prices.cache_write_per_million_usd END,
+                        is_overridden = (model_prices.is_builtin = 0 OR model_prices.is_overridden = 1),
                         is_builtin = 1, revision = MAX(model_prices.revision, excluded.revision),
                         source_url = excluded.source_url,
                         source_updated_at_ms = excluded.source_updated_at_ms,
                         updated_at_ms = excluded.updated_at_ms
-                     WHERE model_prices.source_updated_at_ms IS NULL
+                     WHERE model_prices.is_builtin = 0 OR model_prices.provider <> excluded.provider
+                        OR model_prices.source_updated_at_ms IS NULL
                         OR model_prices.source_updated_at_ms <= excluded.source_updated_at_ms",
                     params![
                         price.pricing_id,
@@ -195,8 +203,8 @@ impl UsageStore {
                         price.cache_read_per_million_usd.to_string(),
                         cache_write,
                         BUILTIN_PRICING_REVISION,
-                        crate::pricing::official::price_source(&price.provider, &price.pricing_id),
-                        crate::pricing::official::snapshot_ms(&price.provider, &price.pricing_id),
+                        official::price_source(&price.provider, &price.pricing_id),
+                        official::snapshot_ms(&price.provider, &price.pricing_id),
                         Utc::now().timestamp_millis(),
                     ],
                 )?;
@@ -230,19 +238,18 @@ impl UsageStore {
                 let pricing_id: String = row.get(1)?;
                 let is_builtin = row.get::<_, i64>(7)? != 0;
                 let is_overridden = row.get::<_, i64>(8)? != 0;
-                let cache_read_per_million_usd = (!is_builtin
-                    || is_overridden
-                    || crate::pricing::official::cache_read_known(&provider, &pricing_id))
-                .then(|| row.get(5))
-                .transpose()?;
                 Ok(ModelPriceRecord {
-                    pricing_note: crate::pricing::official::description(&provider, &pricing_id),
+                    pricing_note: official::description(&provider, &pricing_id),
+                    cache_read_per_million_usd: (!is_builtin
+                        || is_overridden
+                        || official::cache_read_known(&provider, &pricing_id))
+                    .then(|| row.get(5))
+                    .transpose()?,
                     provider,
                     pricing_id,
                     display_name: row.get(2)?,
                     input_per_million_usd: row.get(3)?,
                     output_per_million_usd: row.get(4)?,
-                    cache_read_per_million_usd,
                     cache_write_per_million_usd: row.get(6)?,
                     is_builtin,
                     is_overridden,
@@ -261,7 +268,7 @@ impl UsageStore {
         let overrides = records
             .iter()
             .filter(|r| r.is_overridden || !r.is_builtin)
-            .map(|r| (r.provider.clone(), r.pricing_id.clone()))
+            .map(|r| r.pricing_id.clone())
             .collect();
         let prices = records
             .into_iter()
@@ -293,7 +300,7 @@ impl UsageStore {
     /// rate. Replay their accessible snapshots once to retain request brackets.
     pub fn refresh_official_pricing_sources(&self) -> AppResult<()> {
         self.with_writer(|transaction| {
-            transaction.execute("UPDATE source_files SET parser_version = 0 WHERE agent IN ('claude','opencode','dsh')", [])?;
+            transaction.execute("UPDATE source_files SET parser_version = 0 WHERE agent IN ('claude','opencode','dsh','workbuddy')", [])?;
             Ok(())
         })
     }
@@ -306,107 +313,58 @@ impl UsageStore {
         } else {
             raw_provider
         };
-        let pricing_id =
-            crate::pricing::canonical_model_name(&input.pricing_id.trim().to_ascii_lowercase());
+        let pricing_id = canonical_pricing_id(&input.pricing_id);
         let now = Utc::now().timestamp_millis();
         self.with_writer(|transaction| {
-            let existing_builtin: Option<i64> = transaction
-                .query_row(
-                    "SELECT is_builtin FROM model_prices
-                     WHERE provider = ?1 AND pricing_id = ?2",
-                    params![provider, pricing_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if existing_builtin.is_some() {
-                transaction.execute(
-                    "UPDATE model_prices SET
-                        display_name = ?3, input_per_million_usd = ?4,
-                        output_per_million_usd = ?5, cache_read_per_million_usd = ?6,
-                        cache_write_per_million_usd = ?7,
-                        is_overridden = CASE WHEN is_builtin = 1 THEN 1 ELSE is_overridden END,
-                        is_deleted = 0, revision = revision + 1, updated_at_ms = ?8
-                     WHERE provider = ?1 AND pricing_id = ?2",
-                    params![
-                        provider,
-                        pricing_id,
-                        crate::pricing::canonical_model_name(input.display_name.trim()),
-                        canonical_price(&input.input_per_million_usd)?,
-                        canonical_price(&input.output_per_million_usd)?,
-                        canonical_price(&input.cache_read_per_million_usd)?,
-                        canonical_optional_price(input.cache_write_per_million_usd.as_deref())?,
-                        now,
-                    ],
-                )?;
-            } else {
-                let input_price = canonical_price(&input.input_per_million_usd)?;
-                let output_price = canonical_price(&input.output_per_million_usd)?;
-                let cache_read = canonical_price(&input.cache_read_per_million_usd)?;
-                let cache_write =
-                    canonical_optional_price(input.cache_write_per_million_usd.as_deref())?;
-                transaction.execute(
-                    "INSERT INTO model_prices (
-                        pricing_id, provider, display_name,
-                        input_per_million_usd, output_per_million_usd,
-                        cache_read_per_million_usd, cache_write_per_million_usd,
-                        default_input_per_million_usd, default_output_per_million_usd,
-                        default_cache_read_per_million_usd, default_cache_write_per_million_usd,
-                        is_builtin, is_overridden, is_deleted, revision,
-                        created_at_ms, updated_at_ms
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?4, ?5, ?6, ?7,
-                               0, 0, 0, 1, ?8, ?8)",
-                    params![
-                        pricing_id,
-                        provider,
-                        crate::pricing::canonical_model_name(input.display_name.trim()),
-                        input_price,
-                        output_price,
-                        cache_read,
-                        cache_write,
-                        now,
-                    ],
-                )?;
-            }
+            transaction.execute(
+                "INSERT INTO model_prices (
+                    pricing_id, provider, display_name,
+                    input_per_million_usd, output_per_million_usd,
+                    cache_read_per_million_usd, cache_write_per_million_usd,
+                    default_input_per_million_usd, default_output_per_million_usd,
+                    default_cache_read_per_million_usd, default_cache_write_per_million_usd,
+                    is_builtin, is_overridden, is_deleted, revision, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?4, ?5, ?6, ?7, 0, 0, 0, 1, ?8, ?8)
+                 ON CONFLICT(pricing_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    input_per_million_usd = excluded.input_per_million_usd,
+                    output_per_million_usd = excluded.output_per_million_usd,
+                    cache_read_per_million_usd = excluded.cache_read_per_million_usd,
+                    cache_write_per_million_usd = excluded.cache_write_per_million_usd,
+                    is_overridden = model_prices.is_builtin, is_deleted = 0,
+                    revision = model_prices.revision + 1, updated_at_ms = excluded.updated_at_ms",
+                params![
+                    pricing_id,
+                    provider,
+                    input.display_name.trim(),
+                    canonical_price(&input.input_per_million_usd)?,
+                    canonical_price(&input.output_per_million_usd)?,
+                    canonical_price(&input.cache_read_per_million_usd)?,
+                    canonical_optional_price(input.cache_write_per_million_usd.as_deref())?,
+                    now,
+                ],
+            )?;
             Ok(())
         })
     }
 
-    pub fn delete_model_price(&self, provider: &str, pricing_id: &str) -> AppResult<()> {
+    pub fn delete_model_price(&self, _provider: &str, pricing_id: &str) -> AppResult<()> {
+        let pricing_id = canonical_pricing_id(pricing_id);
         self.with_writer(|transaction| {
-            let builtin: Option<i64> = transaction
-                .query_row(
-                    "SELECT is_builtin FROM model_prices WHERE provider = ?1 AND pricing_id = ?2",
-                    params![
-                        provider.to_ascii_lowercase(),
-                        crate::pricing::canonical_model_name(&pricing_id.to_ascii_lowercase())
-                    ],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if builtin == Some(1) {
-                transaction.execute(
-                    "UPDATE model_prices SET is_deleted = 1, updated_at_ms = ?3
-                     WHERE provider = ?1 AND pricing_id = ?2",
-                    params![
-                        provider.to_ascii_lowercase(),
-                        crate::pricing::canonical_model_name(&pricing_id.to_ascii_lowercase()),
-                        Utc::now().timestamp_millis()
-                    ],
-                )?;
-            } else {
-                transaction.execute(
-                    "DELETE FROM model_prices WHERE provider = ?1 AND pricing_id = ?2",
-                    params![
-                        provider.to_ascii_lowercase(),
-                        crate::pricing::canonical_model_name(&pricing_id.to_ascii_lowercase())
-                    ],
-                )?;
-            }
+            transaction.execute(
+                "DELETE FROM model_prices WHERE pricing_id = ?1 AND is_builtin = 0",
+                [&pricing_id],
+            )?;
+            transaction.execute(
+                "UPDATE model_prices SET is_deleted = 1, updated_at_ms = ?2
+                 WHERE pricing_id = ?1 AND is_builtin = 1",
+                params![pricing_id, Utc::now().timestamp_millis()],
+            )?;
             Ok(())
         })
     }
 
-    pub fn restore_builtin_price(&self, provider: &str, pricing_id: &str) -> AppResult<()> {
+    pub fn restore_builtin_price(&self, _provider: &str, pricing_id: &str) -> AppResult<()> {
         self.with_writer(|transaction| {
             let changed = transaction.execute(
                 "UPDATE model_prices SET
@@ -415,11 +373,10 @@ impl UsageStore {
                     cache_read_per_million_usd = default_cache_read_per_million_usd,
                     cache_write_per_million_usd = default_cache_write_per_million_usd,
                     is_overridden = 0, is_deleted = 0, revision = revision + 1,
-                    updated_at_ms = ?3
-                 WHERE provider = ?1 AND pricing_id = ?2 AND is_builtin = 1",
+                    updated_at_ms = ?2
+                 WHERE pricing_id = ?1 AND is_builtin = 1",
                 params![
-                    provider.to_ascii_lowercase(),
-                    crate::pricing::canonical_model_name(&pricing_id.to_ascii_lowercase()),
+                    canonical_pricing_id(pricing_id),
                     Utc::now().timestamp_millis()
                 ],
             )?;
@@ -511,7 +468,8 @@ impl UsageStore {
                 transaction.execute(
                     "UPDATE session_model_segments SET pricing_model_id = NULLIF(?2, ''),
                         estimated_cost_microusd = ?3,
-                        unpriced_event_count = CASE WHEN ?3 IS NULL AND ?4 = 0 THEN 1 ELSE 0 END
+                        unpriced_event_count = CASE WHEN ?3 IS NULL AND ?4 = 0
+                            THEN MAX(unpriced_event_count, 1) ELSE 0 END
                      WHERE id = ?1",
                     params![segment.0, pricing_id, cost, i64::from(excluded)],
                 )?;

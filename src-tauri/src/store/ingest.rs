@@ -39,8 +39,32 @@ pub struct RetentionResult {
 
 impl UsageStore {
     pub fn source_checkpoints(&self) -> AppResult<Vec<SourceCheckpoint>> {
+        self.sync_checkpoints(false)
+    }
+
+    /// Omit only unreliable checkpoints during repair. Discovery then replays
+    /// those sources without deleting their previous snapshot in advance.
+    pub(crate) fn sync_checkpoints(&self, repair: bool) -> AppResult<Vec<SourceCheckpoint>> {
         self.with_reader(|connection| {
-            let mut statement = connection.prepare(
+            let needs_repair = if repair {
+                "status IN ('pending', 'indexing', 'stale', 'error')
+                 OR safe_offset > file_size OR complete_line_offset > safe_offset
+                 OR (session_id IS NOT NULL AND NOT EXISTS (
+                     SELECT 1 FROM sessions s WHERE s.id = source_files.session_id
+                 ))
+                 OR EXISTS (
+                     SELECT 1 FROM sessions s WHERE s.id = source_files.session_id
+                       AND (s.integrity_status IN ('warning', 'error')
+                         OR s.total_tokens <> s.input_tokens + s.output_tokens
+                         OR s.total_tokens <> COALESCE((
+                             SELECT SUM(d.total_tokens) FROM session_daily_usage d
+                             WHERE d.session_id = s.id
+                         ), 0))
+                 )"
+            } else {
+                "0"
+            };
+            let mut statement = connection.prepare(&format!(
                 "SELECT source_key, relative_path, source_kind, session_id,
                         file_size, mtime_ns, prefix_hash, parser_version,
                         safe_offset, complete_line_offset,
@@ -48,11 +72,16 @@ impl UsageStore {
                         cumulative_input_tokens, cumulative_cached_input_tokens,
                         cumulative_output_tokens, cumulative_reasoning_tokens,
                         relevant_event_ordinal, open_task_turn_id, open_task_started_at_ms,
-                        logs_rowid_watermark, contains_embedded_history, user_wait_timing_json, first_token_context_json
+                        logs_rowid_watermark, contains_embedded_history, user_wait_timing_json, first_token_context_json,
+                        {needs_repair}
                  FROM source_files
                  WHERE source_kind IN ('session', 'archived_session', 'state_db', 'logs_db')",
-            )?;
+            ))?;
             let rows = statement.query_map([], |row| {
+                if repair && row.get::<_, bool>(24)? {
+                    return Ok(None);
+                }
+                let checkpoint = (|| -> rusqlite::Result<SourceCheckpoint> {
                 let kind: String = row.get(2)?;
                 Ok(SourceCheckpoint {
                     source_key: row.get(0)?,
@@ -92,9 +121,63 @@ impl UsageStore {
                             ))?,
                     },
                 })
+                })();
+                match checkpoint {
+                    Ok(checkpoint) => Ok(Some(checkpoint)),
+                    // Invalid serialized cursor fields must not prevent healthy
+                    // sources from being loaded or be overwritten before replay.
+                    Err(_) if repair => Ok(None),
+                    Err(error) => Err(error),
+                }
             })?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+            rows.filter_map(Result::transpose)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(AppError::from)
         })
+    }
+
+    pub(crate) fn ensure_repairable_source(&self, change: &SourceChange) -> AppResult<()> {
+        if !matches!(
+            change.kind,
+            SourceKind::Session | SourceKind::ArchivedSession
+        ) || matches!(
+            change.action,
+            ChangeAction::Missing | ChangeAction::MetadataOnly
+        ) {
+            return Ok(());
+        }
+        let shared_history_pruned = self.with_reader(|connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS (
+                    SELECT 1 FROM source_files f WHERE f.source_key = ?1
+                      AND (SELECT COUNT(*) FROM source_files other
+                           WHERE other.session_id = f.session_id
+                             AND other.source_kind IN ('session', 'archived_session')) > 1
+                      AND (
+                        (SELECT COALESCE(SUM(total_tokens), 0) FROM session_daily_usage
+                         WHERE session_id = f.session_id) >
+                        (SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events
+                         WHERE session_id = f.session_id)
+                        OR (SELECT COALESCE(SUM(call_count), 0) FROM session_daily_tool
+                            WHERE session_id = f.session_id) >
+                           (SELECT COUNT(*) FROM tool_events WHERE session_id = f.session_id)
+                      )
+                )",
+                    [&change.source_key],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(AppError::from)
+        })?;
+        if shared_history_pruned {
+            // Session summaries do not retain per-source attribution after
+            // pruning. Replaying one file could erase another file's history.
+            return Err(AppError::new(
+                "repair_history_unavailable",
+                "共享会话的历史明细已过期，无法安全局部修复，已保留此前记录",
+            ));
+        }
+        Ok(())
     }
 
     /// 在单个 SQLite 事务中应用一个源文件。Replay 会先删除该文件旧派生记录；
@@ -724,8 +807,7 @@ fn apply_state_session_metadata(
     metadata: StateSessionMetadata,
 ) -> AppResult<()> {
     let normalized_path = normalize_workspace_path(&metadata.cwd);
-    let workspace_id = workspace_id(&normalized_path);
-    upsert_workspace(transaction, &workspace_id, &normalized_path)?;
+    let workspace_id = upsert_workspace(transaction, &metadata.session_id, &normalized_path)?;
     let model = metadata.model_raw.as_deref().unwrap_or("unknown");
     let pricing_model = metadata
         .model_raw
@@ -793,8 +875,7 @@ fn apply_session_metadata(
     metadata: SessionMetadata,
 ) -> AppResult<()> {
     let normalized_path = normalize_workspace_path(metadata.cwd.as_deref().unwrap_or("(unknown)"));
-    let workspace_id = workspace_id(&normalized_path);
-    upsert_workspace(transaction, &workspace_id, &normalized_path)?;
+    let workspace_id = upsert_workspace(transaction, &metadata.session_id, &normalized_path)?;
     context.session_id = Some(metadata.session_id.clone());
     context.workspace_id = Some(workspace_id.clone());
     if let Some(provider) = metadata.model_provider.as_deref() {
@@ -830,13 +911,10 @@ fn ensure_session(
     if context.session_id.is_none() {
         context.session_id = Some(change.source_key.trim_start_matches("jsonl:").to_string());
     }
-    if context.workspace_id.is_none() {
-        let unknown = "(unknown)";
-        let id = workspace_id(unknown);
-        upsert_workspace(transaction, &id, unknown)?;
-        context.workspace_id = Some(id);
-    }
     let id = context.session_id.as_deref().unwrap_or("unknown");
+    if context.workspace_id.is_none() {
+        context.workspace_id = Some(upsert_workspace(transaction, id, "(unknown)")?);
+    }
     upsert_session(
         transaction,
         context,
@@ -845,28 +923,39 @@ fn ensure_session(
     )
 }
 
-fn upsert_workspace(
-    transaction: &Transaction<'_>,
-    id: &str,
-    normalized_path: &str,
-) -> AppResult<()> {
-    let display_name = normalized_path
+pub(super) fn workspace_basename(normalized_path: &str) -> &str {
+    normalized_path
         .trim_end_matches('/')
         .rsplit('/')
         .next()
         .filter(|value| !value.is_empty())
-        .unwrap_or(normalized_path);
+        .unwrap_or(normalized_path)
+}
+
+fn upsert_workspace(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    normalized_path: &str,
+) -> AppResult<String> {
+    let agent = crate::source::agents::session_agent(session_id);
+    let id = workspace_id(agent, normalized_path);
     transaction.execute(
         "INSERT INTO workspaces (
-            id, normalized_path, display_name, ignored, created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, 0, ?4, ?4)
+            id, normalized_path, display_name, ignored, created_at_ms, updated_at_ms, agent
+         ) VALUES (?1, ?2, ?3, 0, ?4, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET
             normalized_path = excluded.normalized_path,
-            display_name = COALESCE(workspaces.alias, excluded.display_name),
+            display_name = excluded.display_name,
             updated_at_ms = excluded.updated_at_ms",
-        params![id, normalized_path, display_name, now_ms()],
+        params![
+            id,
+            normalized_path,
+            workspace_basename(normalized_path),
+            now_ms(),
+            agent
+        ],
     )?;
-    Ok(())
+    Ok(id)
 }
 
 fn upsert_session(
@@ -983,6 +1072,11 @@ fn apply_usage_event(
             total_microusd,
         } => (Some(total_microusd), Some(revision), pricing_id, false),
         PriceQuote::Excluded => (None, None, event.pricing_model_id.clone(), true),
+        // Keep usage lacking a required rate separate from priced requests of
+        // the same model so history can be repriced after events expire.
+        PriceQuote::Unpriced if pricing.has_price(&event.pricing_model_id) => {
+            (None, None, String::new(), false)
+        }
         PriceQuote::Unpriced => (None, None, event.pricing_model_id.clone(), false),
     };
     let event_key = event
@@ -1403,9 +1497,12 @@ fn rebuild_fallback_activity(
     timezone: Tz,
     user_waits: &[TimeInterval],
 ) -> AppResult<()> {
-    // WorkBuddy transcripts have no attributable native timing. Never derive
-    // activity or TPS from the time between unrelated model requests.
-    if session_id.starts_with("workbuddy:") {
+    // These sources use native timing only. Missing timing must not become
+    // activity or TPS inferred from gaps between unrelated model requests.
+    if ["workbuddy:", "zcode:", "antigravity:"]
+        .iter()
+        .any(|prefix| session_id.starts_with(prefix))
+    {
         return Ok(());
     }
     let earliest_detail: Option<i64> = transaction.query_row(
@@ -1579,7 +1676,7 @@ fn recompute_session_summary(
             "SELECT model_provider, model_raw, COALESCE(pricing_model_id, '')
              FROM session_model_segments
              WHERE session_id = ?1 AND LOWER(TRIM(model_raw)) <> 'codex-auto-review'
-             GROUP BY model_provider, model_raw, pricing_model_id
+             GROUP BY model_raw
              ORDER BY SUM(input_tokens + output_tokens) DESC, MAX(segment_index) DESC
              LIMIT 1",
             [session_id],
@@ -1910,7 +2007,7 @@ fn normalize_workspace_path(raw: &str) -> String {
     }
 }
 
-fn workspace_id(normalized_path: &str) -> String {
+fn workspace_id(agent: &str, normalized_path: &str) -> String {
     let platform_identity = crate::platform::workspace_identity_path(normalized_path);
     let identity = if cfg!(windows) {
         platform_identity.to_ascii_lowercase()
@@ -1918,12 +2015,17 @@ fn workspace_id(normalized_path: &str) -> String {
         platform_identity
     };
     let digest = blake3::hash(identity.as_bytes()).to_hex();
-    format!("workspace:{}", &digest[..24])
+    let path_id = format!("workspace:{}", &digest[..24]);
+    if agent == "codex" {
+        path_id
+    } else {
+        format!("{agent}:{path_id}")
+    }
 }
 
 fn synthetic_title(session_id: &str, timestamp_ms: Option<i64>) -> String {
     // External session namespaces are identity, not the visible short ID.
-    let session_id = if ["claude:", "opencode:", "dsh:"]
+    let session_id = if ["claude:", "opencode:", "dsh:", "antigravity:"]
         .iter()
         .any(|prefix| session_id.starts_with(prefix))
     {
@@ -2701,7 +2803,10 @@ mod tests {
     #[test]
     fn windows_workspace_identity_remains_case_insensitive() {
         assert_eq!(normalize_workspace_path(r"C:\work\repo\\"), "C:/work/repo");
-        assert_eq!(workspace_id(r"C:/work/repo"), workspace_id(r"c:/WORK/repo"));
+        assert_eq!(
+            workspace_id("codex", r"C:/work/repo"),
+            workspace_id("codex", r"c:/WORK/repo")
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -2712,8 +2817,8 @@ mod tests {
             r"/Users/test/Project\WithBackslash"
         );
         assert_ne!(
-            workspace_id("/Volumes/Missing/Project"),
-            workspace_id("/Volumes/Missing/project")
+            workspace_id("codex", "/Volumes/Missing/Project"),
+            workspace_id("codex", "/Volumes/Missing/project")
         );
     }
 
@@ -2899,6 +3004,63 @@ mod tests {
                     |row| row.get(0),
                 )?;
                 assert_eq!(mismatches, 0);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn repair_keeps_shared_session_history_after_event_retention() {
+        let codex = tempfile::tempdir().unwrap();
+        let sessions = codex.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for (name, model, input, output) in [
+            ("sol", "gpt-5.6-sol", 100, 20),
+            ("terra", "gpt-5.6-terra", 200, 60),
+        ] {
+            std::fs::write(
+                sessions.join(format!("rollout-{name}.jsonl")),
+                session_with_model_usage(model, input, 0, output),
+            )
+            .unwrap();
+        }
+        let store = UsageStore::open_in_memory().unwrap();
+        let source = FsCodexSource::new(codex.path());
+        let plan = source.plan(&[]).unwrap();
+        for change in &plan.changes {
+            store
+                .apply_source_change(
+                    &source,
+                    change,
+                    &PricingCatalog::default(),
+                    chrono_tz::UTC,
+                    30 * 60 * 1000,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+        }
+        store
+            .rebuild_rollups_and_prune(
+                Utc::now().timestamp_millis() + 200 * 86_400_000,
+                90,
+                chrono_tz::UTC,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .ensure_repairable_source(&plan.changes[0])
+                .unwrap_err()
+                .code,
+            "repair_history_unavailable"
+        );
+        store
+            .with_reader(|connection| {
+                let tokens: i64 = connection.query_row(
+                    "SELECT total_tokens FROM sessions WHERE id='shared-session'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(tokens, 380);
                 Ok(())
             })
             .unwrap();
@@ -3765,6 +3927,7 @@ mod tests {
                         },
                         workspace_id: None,
                         model_provider: None,
+                        model_vendors: Vec::new(),
                         model: None,
                         archived: crate::query::ArchiveFilter::All,
                     },

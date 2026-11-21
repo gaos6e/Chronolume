@@ -22,6 +22,7 @@ export interface UsageFilters {
   range: RangeSelection;
   workspaceId?: string;
   modelProvider?: string;
+  modelVendors?: string[];
   model?: string;
   archived: ArchiveFilter;
 }
@@ -81,7 +82,11 @@ export interface FilterOption {
   label: string;
 }
 
-export interface WorkspaceCatalogItem extends FilterOption {
+export interface WorkspaceOption extends FilterOption {
+  agent: string;
+}
+
+export interface WorkspaceCatalogItem extends WorkspaceOption {
   normalizedPath: string;
 }
 
@@ -90,9 +95,10 @@ export interface DashboardSnapshot {
   hero: HeroMetrics;
   trend: TrendPoint[];
   filterOptions: {
-    workspaces: FilterOption[];
+    workspaces: WorkspaceOption[];
     providers: FilterOption[];
     models: FilterOption[];
+    vendors: string[];
   };
   dataState: 'complete' | 'partial' | 'empty';
   generatedAtMs: number;
@@ -169,6 +175,8 @@ export interface ListQuery {
 }
 
 export interface WorkspaceRow {
+  agent: string;
+  alias: string | null;
   id: string;
   label: string;
   normalizedPath: string;
@@ -200,6 +208,7 @@ export interface SessionRow {
   activeMethod: string;
   activeIsEstimate: boolean;
   modelProvider: string;
+  modelVendor: string;
   latestModel: string;
   totalTokens: number;
   inputTokens: number;
@@ -305,6 +314,7 @@ export interface UsageEventRow {
   id: number;
   occurredAtMs: number;
   provider: string;
+  modelVendor: string;
   model: string;
   inputTokens: number;
   cachedInputTokens: number;
@@ -453,6 +463,10 @@ export interface AppPreferences {
 }
 
 export interface SourceSettings {
+  zcode?: string | null;
+  antigravity?: string | null;
+  antigravityCli?: string | null;
+  antigravityIde?: string | null;
   codex?: string | null;
   claude?: string | null;
   opencode?: string | null;

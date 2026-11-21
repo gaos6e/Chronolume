@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use walkdir::WalkDir;
 
-use super::normalized::{Message, Snapshot, Tokens, check_cancel, timestamp};
+use super::normalized::{Message, Snapshot, Tokens, check_cancel, recorded_model, timestamp};
 use super::{
     ChangeAction, ParsedRecord, SourceChange, SourceCursor, SourceKind, StreamOutcome, modified_ns,
     prefix_hash,
@@ -314,8 +314,13 @@ pub(super) fn stream(
             let message = entry.message.as_ref();
             let model = data
                 .request_model_id
-                .or(data.model)
-                .or_else(|| message.and_then(|m| m.model.clone()))
+                .filter(|model| recorded_model(model))
+                .or_else(|| data.model.filter(|model| recorded_model(model)))
+                .or_else(|| {
+                    message
+                        .and_then(|m| m.model.clone())
+                        .filter(|model| recorded_model(model))
+                })
                 .unwrap_or_else(|| "unknown".into());
             let provider = data
                 .provider

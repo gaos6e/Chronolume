@@ -24,9 +24,9 @@
   · <a href="#开发与构建">开发文档</a>
 </p>
 
-Chronolume 是为 **Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 用户**打造的本地洞察应用。只读扫描各 agent 的本地记录，将活动整理成 Token、会话、活跃时间、模型、工具与成本趋势。无需登录，默认离线；首次建立索引，之后按来源增量同步。默认合并展示，可按 agent 筛选，同一工作区的投入统一汇总。
+Chronolume 是为 **Codex、Claude Code、OpenCode、DeepSeek Harness、WorkBuddy、Z Code 与 Google Antigravity 用户**打造的本地洞察应用。只读扫描各 agent 的本地记录，将活动整理成 Token、会话、活跃时间、模型、工具与成本趋势。无需登录，默认离线；首次建立索引，之后按来源增量同步。总览可查看所有 agent 的合计用量。每个 agent 独立统计自己的工作区，例如同一目录会分别显示为 `Codex-Gaos` 和 `Claude Code-Gaos`。
 
-支持 Claude Code 主会话与子 agent、OpenCode 旧 JSON 与多代 SQLite 存储、DeepSeek Harness JSONL/Zstandard 会话；可在数据页配置每个 agent 的数据目录。详细格式、计价与指标边界见 [agent 接入说明](docs/agents.md)。
+支持 Claude Code 主会话与子 agent、OpenCode 旧 JSON 与多代 SQLite 存储、DeepSeek Harness JSONL/Zstandard 会话、Z Code 原生 SQLite 用量和 Google Antigravity 桌面版、CLI、IDE 的会话日志；可在数据页配置每个 agent 的数据目录。详细格式、计价与指标边界见 [agent 接入说明](docs/agents.md)。
 
 <p align="center">
   <picture>
@@ -38,7 +38,7 @@ Chronolume 是为 **Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBu
   <sub>一眼看见用量、成本与工作节奏 · <a href="docs/images/chronolume-dashboard.png">浅色</a> / <a href="docs/images/chronolume-dashboard-dark.png">暗色</a>主题 · 截图使用演示数据</sub>
 </p>
 
-> 成本按 Token 用量与本地价格表估算；常用品牌采用对应官网参考价，渠道价格和用户覆盖优先。详见[官方价格与口径](docs/pricing.md)。估算不等同于提供方账单、余额或在线配额。
+> 成本按 Token 用量估算，同一模型在各平台共用供应商官方 API 参考价或用户自定义价。详见[官方价格与口径](docs/pricing.md)。估算不等同于提供方账单、余额或在线配额。
 
 ## 下载与开始
 
@@ -48,7 +48,7 @@ Chronolume 是为 **Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBu
 | **macOS Universal** · [测试候选](https://github.com/gaos6e/Chronolume/releases/latest) | 带 `unsigned` 的 `.app.zip` / `.dmg` 仅供测试；正式分发等待签名、公证与真机验收 |
 
 1. **下载安装**：Windows 选择安装器或便携版；macOS 候选版请先阅读[测试与分发说明](docs/packaging-macos.md)。
-2. **打开应用**：自动发现本机 Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBuddy 数据，在后台建立分析索引，可查看进度、取消或续传。
+2. **打开应用**：自动发现本机 Codex、Claude Code、OpenCode、DeepSeek Harness、WorkBuddy、Z Code 与 Google Antigravity 数据，在后台建立分析索引，可查看进度、取消或续传。
 3. **查看与导出**：选择 agent、时间范围、工作区、提供方、模型和会话状态，查看自己的使用图景，或导出 CSV、JSON 与趋势 PNG。
 
 无需改变原有 agent 工作方式。应用不会接管请求、读取账号凭据或查询在线配额。
@@ -82,7 +82,7 @@ Chronolume 是为 **Codex、Claude Code、OpenCode、DeepSeek Harness 与 WorkBu
 <details>
 <summary><strong>项目与工作区</strong> · 对比投入，管理别名与统计范围</summary>
 
-按工作区查看会话、Token、成本和活跃时间；可编辑别名，或直接打开该工作区的总览。
+按工作区查看会话、Token、成本和活跃时间。可为每个来源的工作区设置别名和显示范围，或直接打开该工作区的总览。
 
 [![项目与工作区：四个演示项目的使用汇总](docs/images/chronolume-projects.png)](docs/images/chronolume-projects.png)
 

@@ -1,8 +1,9 @@
 import type { HeatmapMetric, HeatmapSnapshot, HeatmapSpan } from '../types';
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatDuration, formatExact, formatTokens } from '../lib/format';
 import { QueryStatus } from './QueryStatus';
+import { DragScroll } from './DragScroll';
 import i18n from '../i18n';
 
 interface ActivityHeatmapProps {
@@ -19,11 +20,11 @@ interface ActivityHeatmapProps {
 export function ActivityHeatmap({ snapshot, metric, span, loading, error, onRetry = () => undefined, onMetric, onSpan }: ActivityHeatmapProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ pointerId: number; startX: number; startScrollLeft: number } | null>(null);
-  const positiveValues = snapshot?.points
+  const points = snapshot?.points;
+  const positiveValues = useMemo(() => (points ?? [])
     .map((point) => point.value)
     .filter((value) => value > 0)
-    .sort((left, right) => left - right) ?? [];
+    .sort((left, right) => left - right), [points]);
 
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
@@ -31,49 +32,10 @@ export function ActivityHeatmap({ snapshot, metric, span, loading, error, onRetr
     scroll.scrollLeft = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
   }, [loading, metric, snapshot?.endDate, snapshot?.points.length, span]);
 
-  const beginDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    const scroll = event.currentTarget;
-    if (event.pointerType === 'touch' || event.button !== 0 || scroll.scrollWidth <= scroll.clientWidth) return;
-    dragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startScrollLeft: scroll.scrollLeft,
-    };
-    scroll.dataset.dragging = 'true';
-    scroll.setPointerCapture?.(event.pointerId);
-  };
-
-  const moveDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    event.currentTarget.scrollLeft = drag.startScrollLeft - (event.clientX - drag.startX);
-    event.preventDefault();
-  };
-
-  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    delete event.currentTarget.dataset.dragging;
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-    }
-  };
-
-  const navigateWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const scroll = event.currentTarget;
-    const step = Math.max(80, scroll.clientWidth * 0.7);
-    if (event.key === 'ArrowLeft') scroll.scrollLeft -= step;
-    else if (event.key === 'ArrowRight') scroll.scrollLeft += step;
-    else if (event.key === 'Home') scroll.scrollLeft = 0;
-    else if (event.key === 'End') scroll.scrollLeft = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
-    else return;
-    event.preventDefault();
-  };
   return (
     <section className={`feature-card heatmap-card metric-${metric.replace('_', '-')}`}>
       <div className="feature-card-heading">
-        <div><span>ACTIVITY</span><h2>{t('活跃热力图')}</h2></div>
+        <div><span>{t('活跃度')}</span><h2>{t('活跃热力图')}</h2></div>
         <div className="segmented-controls">
           <select value={metric} aria-label={t('热力图指标')} onChange={(event) => onMetric(event.target.value as HeatmapMetric)}>
             <option value="sessions">{t('会话数')}</option>
@@ -87,39 +49,32 @@ export function ActivityHeatmap({ snapshot, metric, span, loading, error, onRetr
           </select>
         </div>
       </div>
-      {loading || error ? <QueryStatus loading={loading} error={error} onRetry={onRetry} /> : !snapshot?.points.length ?
-        <div className="chart-empty">{t('当前筛选范围内还没有可绘制的数据。')}</div> : (
-        <div
-          ref={scrollRef}
-          className="heatmap-scroll"
-          role="region"
-          tabIndex={0}
-          aria-label={`${t('活跃热力图')} · ${t('拖动查看更早日期')}`}
-          title={t('拖动查看更早日期')}
-          onPointerDown={beginDrag}
-          onPointerMove={moveDrag}
-          onPointerUp={endDrag}
-          onPointerCancel={endDrag}
-          onLostPointerCapture={endDrag}
-          onKeyDown={navigateWithKeyboard}
-        >
-          <div className={`heatmap-grid span-${span}`}>
-            {snapshot?.points.map((point) => {
-              const level = heatLevel(metric, point.value, snapshot.maxValue, positiveValues);
-              return (
-                <div
-                  key={point.date}
-                  className={`heat-cell metric-${metric.replace('_', '-')} level-${level}`}
-                  title={`${point.date} · ${(metric === 'active_time' && point.activeTimingAvailable === false ? '—' : metricValue(metric, point.value))}`}
-                  aria-label={`${point.date}，${(metric === 'active_time' && point.activeTimingAvailable === false ? '—' : metricValue(metric, point.value))}`}
-                  role="img"
-                />
-              );
-            })}
-          </div>
+      <QueryStatus loading={loading} error={error} onRetry={onRetry} />
+      {snapshot && snapshot.points.length > 0 ? <>
+        <div className="heatmap-plot">
+          <DragScroll axis="x" label={t('活跃热力图')} className="heatmap-scroll" scrollRef={scrollRef}>
+            <div className={`heatmap-grid span-${span}`}>
+              {snapshot.points.map((point) => {
+                const level = heatLevel(metric, point.value, snapshot.maxValue, positiveValues);
+                const value = metric === 'active_time' && point.activeTimingAvailable === false ? '—' : metricValue(metric, point.value);
+                return (
+                  <div
+                    key={point.date}
+                    className={`heat-cell level-${level}`}
+                    title={`${point.date} · ${value}`}
+                    aria-label={`${point.date}，${value}`}
+                    role="img"
+                  />
+                );
+              })}
+            </div>
+          </DragScroll>
         </div>
-      )}
-      <div className="heatmap-legend"><span>{t('少')}</span>{[0, 1, 2, 3, 4].map((level) => <i key={level} className={`level-${level}`} />)}<span>{t('多')}</span></div>
+        <div className="heatmap-footer">
+          <span>{snapshot.startDate} – {snapshot.endDate}</span>
+          <div className="heatmap-legend"><span>{t('少')}</span>{[0, 1, 2, 3, 4].map((level) => <i key={level} className={`level-${level}`} />)}<span>{t('多')}</span></div>
+        </div>
+      </> : !loading && !error && <div className="chart-empty">{t('当前筛选范围内还没有可绘制的数据。')}</div>}
     </section>
   );
 }
@@ -130,9 +85,14 @@ function heatLevel(metric: HeatmapMetric, value: number, maxValue: number, posit
 
   // Token 和活跃时间通常是长尾分布。按正值的百分位着色，避免一个峰值让全年
   // 其余方块都落在同一档；会话数沿用原来的线性刻度。
-  let upperBound = 0;
-  while (upperBound < positiveValues.length && positiveValues[upperBound] <= value) upperBound += 1;
-  return Math.min(4, Math.max(1, Math.ceil((upperBound / positiveValues.length) * 4)));
+  let lower = 0;
+  let upper = positiveValues.length;
+  while (lower < upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    if (positiveValues[middle] <= value) lower = middle + 1;
+    else upper = middle;
+  }
+  return Math.min(4, Math.max(1, Math.ceil((lower / positiveValues.length) * 4)));
 }
 
 function metricValue(metric: HeatmapMetric, value: number): string {

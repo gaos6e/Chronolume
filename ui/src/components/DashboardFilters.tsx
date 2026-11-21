@@ -9,6 +9,7 @@ import type {
 } from '../types';
 
 import { AgentMark } from './AgentBadge';
+import { ModelVendorFilter } from './ModelVendorFilter';
 import { agents } from '../lib/agents';
 
 const presets: Array<{ value: RangePreset; label: string }> = [
@@ -24,19 +25,13 @@ const presets: Array<{ value: RangePreset; label: string }> = [
 
 export function cascadeFilter(
   current: UsageFilters,
-  field: 'agent' | 'workspaceId' | 'modelProvider' | 'model',
+  field: 'agent' | 'workspaceId',
   value?: string,
+  workspaceAgent?: string,
 ): UsageFilters {
-  if (field === 'agent') {
-    return { ...current, agent: value, modelProvider: undefined, model: undefined };
-  }
-  if (field === 'workspaceId') {
-    return { ...current, workspaceId: value, modelProvider: undefined, model: undefined };
-  }
-  if (field === 'modelProvider') {
-    return { ...current, modelProvider: value, model: undefined };
-  }
-  return { ...current, model: value };
+  const next = { ...current, [field]: value, modelProvider: undefined, model: undefined };
+  if (field === 'agent' && value && value !== workspaceAgent) next.workspaceId = undefined;
+  return next;
 }
 
 interface DashboardFiltersProps {
@@ -59,6 +54,12 @@ export function DashboardFilters({
   const { t } = useTranslation();
   const [draft, setDraft] = useState<{ start?: string; end?: string }>();
   const [rangeError, setRangeError] = useState<string>();
+  const workspaces = options?.workspaces ?? [];
+  const selectAgent = (agent?: string) => {
+    if (filters.agent === agent) return;
+    const owner = workspaces.find((workspace) => workspace.value === filters.workspaceId)?.agent;
+    onChange(cascadeFilter(filters, 'agent', agent, owner));
+  };
   const selectRange = (preset: RangePreset) => {
     setDraft(undefined);
     setRangeError(undefined);
@@ -93,25 +94,24 @@ export function DashboardFilters({
 
   return (
     <section className="filter-card" aria-label={t('全局筛选')}>
-      <div className="agent-filter-bar">
+      <div className="filter-quick-row">
         <div className="agent-filter-options" role="group" aria-label={t('Agent 来源')}>
-          <button type="button" className={`agent-option${!filters.agent ? ' selected' : ''}`} aria-pressed={!filters.agent} onClick={() => onChange(cascadeFilter(filters, 'agent'))}><Layers3 />{t('全部 agent')}</button>
-          {agents.map((agent) => <button type="button" key={agent.id} className={`agent-option ${agent.id}${filters.agent === agent.id ? ' selected' : ''}`} aria-pressed={filters.agent === agent.id} onClick={() => onChange(cascadeFilter(filters, 'agent', agent.id))}><AgentMark agent={agent.id} />{agent.label}</button>)}
+          <button type="button" className={`agent-option${!filters.agent ? ' selected' : ''}`} aria-pressed={!filters.agent} onClick={() => selectAgent()}><Layers3 />{t('全部 agent')}</button>
+          {agents.map((agent) => <button type="button" key={agent.id} className={`agent-option ${agent.id}${filters.agent === agent.id ? ' selected' : ''}`} aria-pressed={filters.agent === agent.id} onClick={() => selectAgent(agent.id)}><AgentMark agent={agent.id} />{agent.label}</button>)}
         </div>
-        <span className="agent-filter-caption">{t('同一工作区，统一洞察')}</span>
-      </div>
-      <div className="preset-row" role="group" aria-label={t('时间范围')}>
-        {presets.map((preset) => (
-          <button
-            key={preset.value}
-            type="button"
-            className={filters.range.preset === preset.value ? 'preset active' : 'preset'}
-            aria-pressed={filters.range.preset === preset.value}
-            onClick={() => selectRange(preset.value)}
-          >
-            {t(preset.label)}
-          </button>
-        ))}
+        <div className="preset-row" role="group" aria-label={t('时间范围')}>
+          {presets.map((preset) => (
+            <button
+              key={preset.value}
+              type="button"
+              className={filters.range.preset === preset.value ? 'preset active' : 'preset'}
+              aria-pressed={filters.range.preset === preset.value}
+              onClick={() => selectRange(preset.value)}
+            >
+              {t(preset.label)}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="select-row">
@@ -128,40 +128,21 @@ export function DashboardFilters({
             }}
           >
             <option value="">{t('全部工作区')}</option>
-            {options?.workspaces.map((option) => (
+            {workspaces.filter((option) => !filters.agent || filters.agent === option.agent).map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
             <option value="__manage_workspaces__">{t('其他工作区…')}</option>
           </select>
         </label>
-        <label>
-          <span>{t('提供方')}</span>
-          <select
-            value={filters.modelProvider ?? ''}
-            onChange={(event) =>
-              onChange(cascadeFilter(filters, 'modelProvider', event.target.value || undefined))
-            }
-          >
-            <option value="">{t('全部提供方')}</option>
-            {options?.providers.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>{t('模型')}</span>
-          <select
-            value={filters.model ?? ''}
-            onChange={(event) =>
-              onChange(cascadeFilter(filters, 'model', event.target.value || undefined))
-            }
-          >
-            <option value="">{t('全部模型')}</option>
-            {options?.models.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        </label>
+        <ModelVendorFilter
+          options={options?.vendors ?? []}
+          selected={filters.modelVendors ?? []}
+          loading={refreshing}
+          onChange={(vendors) => onChange({
+            ...filters, modelProvider: undefined, model: undefined,
+            modelVendors: vendors.length ? vendors : undefined,
+          })}
+        />
         <label>
           <span>{t('会话状态')}</span>
           <select

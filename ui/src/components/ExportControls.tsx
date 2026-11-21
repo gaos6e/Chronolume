@@ -99,7 +99,7 @@ async function svgToPng(svg: SVGSVGElement): Promise<Uint8Array> {
   const originals = svg.querySelectorAll('*');
   clone.querySelectorAll('*').forEach((element, index) => {
     const style = getComputedStyle(originals[index]);
-    ['fill', 'stroke', 'color'].forEach((property) => {
+    ['fill', 'stroke', 'color', 'stop-color'].forEach((property) => {
       if (element.getAttribute(property)?.includes('var(')) element.setAttribute(property, style.getPropertyValue(property));
     });
   });

@@ -171,7 +171,10 @@ fn is_write_tool(name: &str) -> bool {
 fn is_shell_tool(name: &str) -> bool {
     name.contains("shell_command")
         || name.contains("exec_command")
-        || matches!(name, "bash" | "shell" | "powershell" | "terminal")
+        || matches!(
+            name,
+            "bash" | "shell" | "powershell" | "terminal" | "run_command"
+        )
 }
 
 fn classify_shell_operation(raw: &str) -> OperationKind {

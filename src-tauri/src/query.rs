@@ -53,6 +53,8 @@ pub struct UsageFilters {
     pub range: RangeSelection,
     pub workspace_id: Option<String>,
     pub model_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_vendors: Vec<String>,
     pub model: Option<String>,
     #[serde(default)]
     pub archived: ArchiveFilter,
@@ -130,11 +132,19 @@ pub struct FilterOption {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceOption {
+    pub value: String,
+    pub label: String,
+    pub agent: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FilterOptions {
-    pub workspaces: Vec<FilterOption>,
+    pub workspaces: Vec<WorkspaceOption>,
     pub providers: Vec<FilterOption>,
     pub models: Vec<FilterOption>,
+    pub vendors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -192,7 +202,7 @@ impl UsageQuery {
         let (condition, values) = rollup_conditions(filters, &range, "d");
         let timing_by_date = self.store.with_reader(|connection| {
             let mut statement = connection.prepare(&format!(
-                "SELECT d.local_date, MAX(d.agent <> 'workbuddy' OR d.active_ms > 0) FROM session_daily_usage d WHERE {condition} GROUP BY d.local_date"
+                "SELECT d.local_date, MAX(d.agent NOT IN ('workbuddy', 'zcode', 'antigravity') OR d.active_ms > 0) FROM session_daily_usage d WHERE {condition} GROUP BY d.local_date"
             ))?;
             statement.query_map(params_from_iter(values.iter()), |row| Ok((row.get::<_,String>(0)?, row.get::<_,bool>(1)?)))?
                 .collect::<Result<BTreeMap<_,_>,_>>().map_err(AppError::from)
@@ -669,19 +679,25 @@ impl UsageQuery {
         self.store.with_reader(|connection| {
             let workspaces = {
                 let mut statement = connection.prepare(
-                    "SELECT DISTINCT w.id, COALESCE(w.alias, w.display_name)
-                     FROM session_daily_usage d JOIN workspaces w ON w.id = d.workspace_id
+                    "SELECT DISTINCT w.id, w.label, w.agent
+                     FROM session_daily_usage d JOIN named_workspaces w ON w.id = d.workspace_id
                      WHERE d.local_date BETWEEN ?1 AND ?2 AND w.ignored = 0
+                       AND (?3 IS NULL OR w.agent = ?3)
                        AND LOWER(TRIM(d.model_raw)) <> 'codex-auto-review'
                      ORDER BY 2 COLLATE NOCASE",
                 )?;
                 statement
                     .query_map(
-                        [range.start_date_string(), range.end_date_string()],
+                        rusqlite::params![
+                            range.start_date_string(),
+                            range.end_date_string(),
+                            filters.agent
+                        ],
                         |row| {
-                            Ok(FilterOption {
+                            Ok(WorkspaceOption {
                                 value: row.get(0)?,
                                 label: row.get(1)?,
+                                agent: row.get(2)?,
                             })
                         },
                     )?
@@ -690,7 +706,6 @@ impl UsageQuery {
             let mut provider_clauses = vec![
                 "d.local_date BETWEEN ? AND ?".to_string(),
                 "d.workspace_id IN (SELECT id FROM workspaces WHERE ignored = 0)".to_string(),
-                "TRIM(LOWER(d.model_provider)) NOT IN ('', 'unknown', '(unknown)')".to_string(),
                 "LOWER(TRIM(d.model_raw)) <> 'codex-auto-review'".to_string(),
             ];
             let mut provider_values = vec![
@@ -713,6 +728,7 @@ impl UsageQuery {
                 &format!(
                     "SELECT {provider} AS provider, {provider}
                      FROM session_daily_usage d WHERE {}
+                       AND TRIM(LOWER(d.model_provider)) NOT IN ('', 'unknown', '(unknown)')
                      GROUP BY provider
                      ORDER BY CASE provider WHEN 'openai' THEN 0 ELSE 1 END",
                     provider_clauses.join(" AND "),
@@ -720,6 +736,18 @@ impl UsageQuery {
                 ),
                 &provider_values,
             )?;
+            let vendors = {
+                let mut statement = connection.prepare(&format!(
+                    "SELECT DISTINCT model_vendor(d.model_raw) AS vendor
+                     FROM session_daily_usage d WHERE {} ORDER BY vendor",
+                    provider_clauses.join(" AND ")
+                ))?;
+                statement
+                    .query_map(params_from_iter(provider_values.iter()), |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
             let mut model_clauses = provider_clauses;
             let mut model_values = provider_values;
             if let Some(provider) = filters.model_provider.as_deref() {
@@ -747,6 +775,7 @@ impl UsageQuery {
                 workspaces,
                 providers,
                 models,
+                vendors,
             })
         })
     }
@@ -975,6 +1004,12 @@ fn rollup_conditions(
         clauses.push(format!("{alias}.model_raw = ?"));
         values.push(SqlValue::Text(crate::pricing::canonical_model_name(model)));
     }
+    push_model_vendors(
+        &mut clauses,
+        &mut values,
+        &filters.model_vendors,
+        &format!("{alias}.model_raw"),
+    );
     push_agent(&mut clauses, &mut values, filters, alias);
     push_archive(&mut clauses, &mut values, filters.archived, alias);
     (clauses.join(" AND "), values)
@@ -1022,8 +1057,27 @@ fn push_filters(
         clauses.push(format!("{alias}.{column} = ?"));
         values.push(SqlValue::Text(crate::pricing::canonical_model_name(model)));
     }
+    let model_column = event_alias.map_or_else(
+        || format!("COALESCE(NULLIF({session_alias}.primary_model_raw, ''), {session_alias}.latest_model_raw)"),
+        |alias| format!("{alias}.model_raw"),
+    );
+    push_model_vendors(clauses, values, &filters.model_vendors, &model_column);
     push_agent(clauses, values, filters, session_alias);
     push_archive(clauses, values, filters.archived, session_alias);
+}
+
+fn push_model_vendors(
+    clauses: &mut Vec<String>,
+    values: &mut Vec<SqlValue>,
+    vendors: &[String],
+    model: &str,
+) {
+    if vendors.is_empty() {
+        return;
+    }
+    let placeholders = vec!["?"; vendors.len()].join(", ");
+    clauses.push(format!("model_vendor({model}) IN ({placeholders})"));
+    values.extend(vendors.iter().cloned().map(SqlValue::Text));
 }
 
 fn push_agent(
@@ -1248,6 +1302,7 @@ mod tests {
                 },
                 workspace_id: None,
                 model_provider: None,
+                model_vendors: Vec::new(),
                 model: None,
                 archived: ArchiveFilter::All,
             })
@@ -1256,7 +1311,7 @@ mod tests {
         assert_eq!(snapshot.hero.fresh_input_tokens, 60);
         assert_eq!(snapshot.hero.cache_hit_rate, Some(0.4));
         assert_eq!(snapshot.trend.len(), 1);
-        assert_eq!(snapshot.filter_options.workspaces[0].label, "repo");
+        assert_eq!(snapshot.filter_options.workspaces[0].label, "Codex-repo");
         assert_eq!(snapshot.filter_options.providers[0].value, "openai");
         assert_eq!(snapshot.filter_options.models[0].value, "gpt-5.6-sol");
     }
@@ -1299,6 +1354,7 @@ mod tests {
             },
             workspace_id: None,
             model_provider: None,
+            model_vendors: Vec::new(),
             model: None,
             archived: ArchiveFilter::All,
         };
@@ -1391,6 +1447,7 @@ mod tests {
                 },
                 workspace_id: None,
                 model_provider: None,
+                model_vendors: Vec::new(),
                 model: None,
                 archived: ArchiveFilter::All,
             })

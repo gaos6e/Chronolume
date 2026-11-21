@@ -21,6 +21,197 @@ use crate::store::{ModelPriceInput, UsageStore};
 
 const SECRET: &str = "PRIVATE_AGENT_MARKER_DO_NOT_PERSIST";
 
+#[test]
+fn repair_replays_only_bad_sources_and_keeps_deleted_source_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let now = Utc::now().timestamp_millis();
+    for name in ["healthy", "removed", "error", "cursor", "summary"] {
+        let time = if name == "removed" {
+            now - 120 * 86_400_000
+        } else {
+            now
+        };
+        write_lines(
+            &directory
+                .path()
+                .join(format!("claude/projects/p/{name}.jsonl")),
+            &[claude_message(name, time, 100, 10)],
+        );
+    }
+    let (store, _, indexer) = setup(directory.path());
+    assert_eq!(indexer.sync(SyncMode::Initial).unwrap().file_errors, 0);
+    fs::remove_file(directory.path().join("claude/projects/p/removed.jsonl")).unwrap();
+    let healthy_updated: i64 = store
+        .with_reader(|connection| {
+            Ok(connection.query_row(
+                "SELECT updated_at_ms FROM sessions WHERE id='claude:healthy'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    store.with_writer(|transaction| {
+        transaction.execute("UPDATE source_files SET status='error' WHERE session_id='claude:error'", [])?;
+        transaction.execute("UPDATE source_files SET user_wait_timing_json='invalid-json' WHERE session_id='claude:cursor'", [])?;
+        transaction.execute("UPDATE sessions SET total_tokens=1 WHERE id='claude:summary'", [])?;
+        Ok(())
+    }).unwrap();
+
+    let repaired = indexer.sync(SyncMode::Repair).unwrap();
+    assert_eq!(repaired.file_errors, 0);
+    // Three repaired sources and one missing source; the healthy file is untouched.
+    assert_eq!(repaired.files_total, 4);
+    assert!(store.source_checkpoints().is_ok());
+    store.with_reader(|connection| {
+        let totals: (i64, i64) = connection.query_row("SELECT COUNT(*),SUM(total_tokens) FROM sessions", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        assert_eq!(totals, (5, 700));
+        let after: i64 = connection.query_row("SELECT updated_at_ms FROM sessions WHERE id='claude:healthy'", [], |row| row.get(0))?;
+        assert_eq!(after, healthy_updated);
+        let retained: i64 = connection.query_row("SELECT COUNT(*) FROM usage_events WHERE session_id='claude:removed'", [], |row| row.get(0))?;
+        assert_eq!(retained, 0);
+        let history: i64 = connection.query_row("SELECT SUM(total_tokens) FROM session_daily_usage WHERE session_id='claude:removed'", [], |row| row.get(0))?;
+        assert_eq!(history, 140);
+        let global: i64 = connection.query_row("SELECT SUM(total_tokens) FROM daily_usage_rollups", [], |row| row.get(0))?;
+        assert_eq!(global, 700);
+        Ok(())
+    }).unwrap();
+    assert_eq!(indexer.sync(SyncMode::Repair).unwrap().records_written, 0);
+}
+
+#[test]
+fn failed_repair_preserves_previous_snapshot_and_can_retry_unchanged_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("claude/projects/p/broken.jsonl");
+    let message = claude_message("repair-message", Utc::now().timestamp_millis(), 100, 10);
+    write_lines(&path, std::slice::from_ref(&message));
+    let (store, _, indexer) = setup(directory.path());
+    indexer.sync(SyncMode::Initial).unwrap();
+    fs::write(&path, b"invalid-json\n").unwrap();
+    let failed = indexer.sync(SyncMode::Repair).unwrap();
+    assert_eq!(failed.file_errors, 1);
+    assert!(
+        failed
+            .error_counts
+            .keys()
+            .any(|key| key.contains("repair_source_incomplete"))
+    );
+    store
+        .with_reader(|connection| {
+            let tokens: i64 = connection.query_row(
+                "SELECT total_tokens FROM sessions WHERE id='claude:broken'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(tokens, 140);
+            let events: i64 =
+                connection.query_row("SELECT SUM(total_tokens) FROM usage_events", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(events, 140);
+            Ok(())
+        })
+        .unwrap();
+    // Restore exactly the previously indexed content. The stored error flag
+    // must still force a replay rather than treating it as an unchanged source.
+    write_lines(&path, &[message]);
+    let repaired = indexer.sync(SyncMode::Repair).unwrap();
+    assert_eq!(repaired.file_errors, 0);
+    assert!(repaired.records_written > 0);
+}
+
+#[test]
+fn repair_never_resets_healthy_records_when_database_check_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    write_lines(
+        &directory.path().join("claude/projects/p/healthy.jsonl"),
+        &[claude_message(
+            "healthy",
+            Utc::now().timestamp_millis(),
+            100,
+            10,
+        )],
+    );
+    let (store, _, indexer) = setup(directory.path());
+    indexer.sync(SyncMode::Initial).unwrap();
+    store
+        .with_writer(|transaction| {
+            transaction.execute_batch(
+                "PRAGMA ignore_check_constraints=ON;
+            UPDATE source_files SET file_size=-1;
+            PRAGMA ignore_check_constraints=OFF;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!store.integrity_check().unwrap());
+    assert_eq!(
+        indexer.sync(SyncMode::Repair).unwrap_err().code,
+        "repair_database_damaged"
+    );
+    assert_eq!(indexer.status().phase, crate::indexer::SyncPhase::Failed);
+    store
+        .with_reader(|connection| {
+            let tokens: i64 = connection.query_row(
+                "SELECT total_tokens FROM sessions WHERE id='claude:healthy'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(tokens, 140);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn reindex_backs_up_deleted_source_history_before_rebuilding() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("claude/projects/p/removed.jsonl");
+    write_lines(
+        &path,
+        &[claude_message(
+            "removed",
+            Utc::now().timestamp_millis(),
+            100,
+            10,
+        )],
+    );
+    let (store, _, indexer) = setup(directory.path());
+    indexer.sync(SyncMode::Initial).unwrap();
+    fs::remove_file(path).unwrap();
+    assert_eq!(indexer.sync(SyncMode::Rebuild).unwrap().file_errors, 0);
+    let backups: Vec<_> = fs::read_dir(store.path().parent().unwrap().join("backups"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert!(
+        backups[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("-reindex-")
+    );
+    let backup =
+        Connection::open_with_flags(&backups[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let tokens: i64 = backup
+        .query_row(
+            "SELECT total_tokens FROM sessions WHERE id='claude:removed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tokens, 140);
+    store
+        .with_reader(|connection| {
+            let count: i64 =
+                connection.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
+            assert_eq!(count, 0);
+            Ok(())
+        })
+        .unwrap();
+}
+
 fn write_json(path: &Path, value: Value) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
@@ -78,6 +269,7 @@ fn filters(agent: Option<&str>) -> UsageFilters {
         },
         workspace_id: None,
         model_provider: None,
+        model_vendors: Vec::new(),
         model: None,
         archived: ArchiveFilter::All,
     }
@@ -103,6 +295,10 @@ fn setup(root: &Path) -> (Arc<UsageStore>, Arc<MultiAgentSource>, UsageIndexer) 
         claude: Some(root.join("claude").to_string_lossy().into()),
         opencode: Some(root.join("opencode").to_string_lossy().into()),
         dsh: Some(root.join("dsh").to_string_lossy().into()),
+        zcode: Some(root.join("zcode").to_string_lossy().into()),
+        antigravity: Some(root.join("antigravity").to_string_lossy().into()),
+        antigravity_cli: Some(root.join("antigravity-cli").to_string_lossy().into()),
+        antigravity_ide: Some(root.join("antigravity-ide").to_string_lossy().into()),
         workbuddy: Some(root.join("workbuddy").to_string_lossy().into()),
         workbuddy_ai: Some(root.join("workbuddy-ai").to_string_lossy().into()),
         workbuddy_cli: Some(root.join("codebuddy-cli").to_string_lossy().into()),
@@ -118,7 +314,464 @@ fn setup(root: &Path) -> (Arc<UsageStore>, Arc<MultiAgentSource>, UsageIndexer) 
 }
 
 #[test]
-fn agents_share_workspaces_keep_identity_and_never_persist_content() {
+fn antigravity_imports_three_clients_and_replays_corrected_steps_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let logs = |client: &str, id: &str| {
+        root.join(client)
+            .join("brain")
+            .join(id)
+            .join(".system_generated/logs")
+    };
+    let app = logs("antigravity", "parent").join("transcript.jsonl");
+    let cli = logs("antigravity-cli", "parent").join("transcript_full.jsonl");
+    let ide = logs("antigravity-ide", "child").join("transcript.jsonl");
+    let time = Utc::now().to_rfc3339();
+    let step = |index, input, cached, output| {
+        json!({
+            "step_index":index, "created_at":time, "type":"PLANNER_RESPONSE", "status":"DONE",
+            "model":if index == 1 { "gemini-4-neon-high" } else { "gemini-4-neon-medium" },
+            "input_tokens":input, "cache_read_tokens":cached, "output_tokens":output,
+            "content":SECRET, "thinking":SECRET,
+            "tool_calls":[{"name":"run_command","args":SECRET},{"name":"run_command","args":SECRET}]
+        })
+    };
+    let first = step(1, 10, 50, 7);
+    write_lines(&app, &[first.clone(), first.clone()]);
+    write_lines(
+        &app.with_file_name("transcript_full.jsonl"),
+        &[step(9, 999, 0, 0)],
+    );
+    write_lines(&cli, &[first, step(2, 5, 0, 3)]);
+    write_lines(&ide, &[step(1, 1, 2, 3)]);
+    let db = Connection::open(root.join("antigravity-ide/conversation_summaries.db")).unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+    let uri = reqwest::Url::from_directory_path(root.join("shared")).unwrap();
+    db.execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT PRIMARY KEY, workspace_uris TEXT, parent_conversation_id TEXT, preview TEXT)").unwrap();
+    db.execute(
+        "INSERT INTO conversation_summaries VALUES ('child',?1,'parent',?2)",
+        params![uri.as_str(), SECRET],
+    )
+    .unwrap();
+
+    let (store, source, indexer) = setup(root);
+    let description = source
+        .settings()
+        .describe()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.agent == "antigravity")
+        .unwrap();
+    assert_eq!(description.roots.len(), 3);
+    assert!(description.roots.iter().all(|r| r.available));
+    let sync = indexer.sync(SyncMode::Initial).unwrap();
+    assert_eq!(
+        (sync.files_total, sync.file_errors, sync.parse_failures),
+        (2, 0, 0),
+        "{:?}",
+        sync.error_counts
+    );
+    let query = Arc::new(UsageQuery::new(store.clone(), chrono_tz::UTC));
+    let filter = filters(Some("antigravity"));
+    assert_eq!(query.sessions(&list(Some("antigravity"))).unwrap().total, 2);
+    let parent = query.session_detail("antigravity:parent").unwrap().session;
+    assert!(parent.title.contains("parent"));
+    assert_eq!(
+        (
+            parent.fresh_input_tokens,
+            parent.cached_input_tokens,
+            parent.output_tokens,
+            parent.total_tokens
+        ),
+        (15, 50, 10, 75)
+    );
+    assert_eq!(parent.tokens_per_second, None);
+    assert_eq!(parent.average_first_token_latency_ms, None);
+    let child = query.session_detail("antigravity:child").unwrap().session;
+    assert_eq!(
+        child.parent_session_id.as_deref(),
+        Some("antigravity:parent")
+    );
+    assert_eq!(child.workspace_label, "Google Antigravity-shared");
+    assert_eq!(child.total_tokens, 6);
+    let dashboard = query.dashboard(&filter).unwrap();
+    assert_eq!(dashboard.hero.real_total_tokens, 81);
+    let models = query.models(&list(Some("antigravity"))).unwrap();
+    assert_eq!(models.total, 1);
+    assert_eq!(models.items[0].model, "gemini-4-neon");
+    assert_eq!(models.items[0].unpriced_event_count, 0);
+    assert_eq!(models.items[0].cache_hit_rate, Some(52.0 / 68.0));
+    assert_eq!(
+        dashboard.hero.cache_hit_rate,
+        models.items[0].cache_hit_rate
+    );
+    assert!(!dashboard.hero.active_timing_available);
+    assert_eq!(query.tools(&filter).unwrap().total_calls, 6);
+    let exporter = UsageExporter::new(query.clone());
+    for (format, ext) in [(ExportFormat::Csv, "csv"), (ExportFormat::Json, "json")] {
+        let path = root.join(format!("sessions.{ext}"));
+        let result = exporter
+            .export_to_path(
+                &ExportRequest {
+                    scope: ExportScope::Sessions,
+                    format,
+                    filters: filter.clone(),
+                    privacy: ExportPrivacy::Anonymous,
+                },
+                path.to_str().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(result.rows_written, 2);
+        let output = fs::read_to_string(path).unwrap();
+        assert!(!output.contains(SECRET));
+        assert!(output.contains("antigravity"));
+        if ext == "json" {
+            let envelope: Value = serde_json::from_str(&output).unwrap();
+            let rows = envelope["data"].as_array().unwrap();
+            assert!(
+                rows.iter()
+                    .all(|row| row["activeMs"] == Value::Null
+                        && row["activeTimingAvailable"] == false)
+            );
+        }
+    }
+    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().files_total, 0);
+    // A metadata-only edit must update the project even when the transcript is unchanged.
+    db.execute("UPDATE conversation_summaries SET workspace_uris=''", [])
+        .unwrap();
+    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().files_total, 1);
+    assert_eq!(
+        query
+            .session_detail("antigravity:child")
+            .unwrap()
+            .session
+            .workspace_label,
+        "Google Antigravity-(unknown)"
+    );
+    drop(db);
+    let summary = root.join("antigravity-ide/conversation_summaries.db");
+    let before = fs::read(&summary).unwrap();
+    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().files_total, 0);
+    assert_eq!(fs::read(&summary).unwrap(), before);
+    assert!(!summary.with_extension("db-wal").exists());
+    assert!(!summary.with_extension("db-shm").exists());
+    let smaller = step(2, 2, 0, 1);
+    write_lines(&cli, &[step(2, 5, 0, 3), smaller.clone()]);
+    let mut file = fs::OpenOptions::new().append(true).open(&cli).unwrap();
+    write!(file, "{{\"step_index\":").unwrap();
+    drop(file);
+    let sync = indexer.sync(SyncMode::Incremental).unwrap();
+    assert_eq!((sync.files_total, sync.file_errors), (1, 0));
+    assert_eq!(
+        query
+            .session_detail("antigravity:parent")
+            .unwrap()
+            .session
+            .total_tokens,
+        70
+    );
+    write_lines(&cli, &[smaller, step(3, 2, 0, 2)]);
+    indexer.sync(SyncMode::Incremental).unwrap();
+    assert_eq!(
+        query
+            .session_detail("antigravity:parent")
+            .unwrap()
+            .session
+            .total_tokens,
+        74
+    );
+    // A corrupt complete record must preserve the last successful snapshot.
+    fs::write(&cli, b"{bad json}\n").unwrap();
+    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().file_errors, 1);
+    assert_eq!(
+        query
+            .session_detail("antigravity:parent")
+            .unwrap()
+            .session
+            .total_tokens,
+        74
+    );
+}
+
+fn zcode_db(root: &Path, time: i64) -> Connection {
+    let path = root.join("zcode/cli/db/db.sqlite");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let db = Connection::open(path).unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL;
+        CREATE TABLE session(id TEXT PRIMARY KEY,directory TEXT,parent_id TEXT,time_created INTEGER,time_updated INTEGER,time_archived INTEGER,title TEXT);
+        CREATE TABLE model_usage(id TEXT PRIMARY KEY,session_id TEXT,started_at INTEGER,model_id TEXT,status TEXT,input_tokens INTEGER,output_tokens INTEGER,provider_id TEXT,cache_read_input_tokens INTEGER DEFAULT 0,cache_creation_input_tokens INTEGER DEFAULT 0,reasoning_tokens INTEGER DEFAULT 0,completed_at INTEGER,duration_ms INTEGER,turn_id TEXT,raw_usage_json TEXT);
+        CREATE TABLE tool_usage(id TEXT PRIMARY KEY,session_id TEXT,tool_call_id TEXT,tool_name TEXT,started_at INTEGER,status TEXT,completed_at INTEGER,duration_ms INTEGER,error_message TEXT);
+        CREATE TABLE turn_usage(session_id TEXT,turn_id TEXT,started_at INTEGER,status TEXT,first_token_at INTEGER,time_to_first_token_ms INTEGER,input_tokens INTEGER);
+        CREATE TABLE message(id TEXT,data TEXT);").unwrap();
+    db.execute(
+        "INSERT INTO session VALUES ('same-id','C:/work/shared',NULL,?1,?1,NULL,?2)",
+        params![time, SECRET],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO session VALUES ('child','C:/work/shared','same-id',?1,?1,?1,?2)",
+        params![time, SECRET],
+    )
+    .unwrap();
+    for (id, status, start, end, input, output, cached, write, reasoning) in [
+        ("r1", "completed", 0, 1000, 1000, 200, 600, 100, 50),
+        ("r2", "error", 2000, 2500, 100, 30, 20, 0, 0),
+        ("r3", "cancelled", 3000, 3300, 50, 10, 0, 0, 0),
+        ("r4", "running", 4000, 5000, 500000, 100000, 0, 0, 0),
+    ] {
+        db.execute("INSERT INTO model_usage VALUES (?1,'same-id',?2,'glm-5.3-flash',?3,?4,?5,'zai',?6,?7,?8,?9,NULL,'turn',?10)",params![id,time+start,status,input,output,cached,write,reasoning,time+end,SECRET]).unwrap();
+    }
+    for (id, call, name, start, end, status) in [
+        ("t1", "tool1", "read_file", 900, 1600, "completed"),
+        ("t1-copy", "tool1", "read_file", 900, 1600, "completed"),
+        ("t2", "tool2", "bash", 2500, 2700, "error"),
+    ] {
+        db.execute(
+            "INSERT INTO tool_usage VALUES (?1,'same-id',?2,?3,?4,?5,?6,NULL,?7)",
+            params![id, call, name, time + start, status, time + end, SECRET],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO turn_usage VALUES ('same-id','turn',?1,'completed',?2,100,999999)",
+        params![time, time + 100],
+    )
+    .unwrap();
+    db.execute("INSERT INTO message VALUES ('private',?1)", [SECRET])
+        .unwrap();
+    db
+}
+
+#[test]
+fn zcode_ledger_preserves_usage_timing_parentage_privacy_and_wal_corrections() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let time = Utc::now().timestamp_millis() - 100_000;
+    let db = zcode_db(root, time);
+    let (store, source, indexer) = setup(root);
+    let description = source
+        .settings()
+        .describe()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.agent == "zcode")
+        .unwrap();
+    assert!(description.available);
+    let before = fs::read(root.join("zcode/cli/db/db.sqlite-wal")).unwrap();
+    let status = indexer.sync(SyncMode::Initial).unwrap();
+    assert_eq!(
+        (status.file_errors, status.parse_failures),
+        (0, 0),
+        "{:?}",
+        status.error_counts
+    );
+    let query = Arc::new(UsageQuery::new(store.clone(), chrono_tz::UTC));
+    let sessions = query.sessions(&list(Some("zcode"))).unwrap();
+    assert_eq!(sessions.total, 2);
+    let detail = query.session_detail("zcode:same-id").unwrap();
+    let session = detail.session;
+    assert_eq!(
+        (
+            session.input_tokens,
+            session.output_tokens,
+            session.total_tokens
+        ),
+        (1150, 240, 1390)
+    );
+    assert_eq!(
+        (
+            session.fresh_input_tokens,
+            session.cached_input_tokens,
+            session.cache_write_tokens,
+            session.reasoning_tokens
+        ),
+        (430, 620, 100, 50)
+    );
+    assert_eq!(session.active_ms, 2600);
+    assert_eq!(session.active_method, "lifecycle");
+    assert!(!session.active_is_estimate);
+    assert_eq!(session.average_first_token_latency_ms, Some(100.0));
+    assert_eq!(session.first_token_latency_sample_count, 1);
+    assert_eq!(session.integrity_status, "partial");
+    assert!(session.estimated_cost_microusd.unwrap() > 0);
+    let child = query.session_detail("zcode:child").unwrap().session;
+    assert_eq!(child.parent_session_id.as_deref(), Some("zcode:same-id"));
+    assert!(child.archived);
+    assert_eq!(query.tools(&filters(Some("zcode"))).unwrap().total_calls, 2);
+    let dashboard = query.dashboard(&filters(Some("zcode"))).unwrap();
+    assert_eq!(dashboard.hero.real_total_tokens, 1390);
+    assert!(dashboard.hero.active_timing_available);
+    assert_eq!(
+        query.models(&list(Some("zcode"))).unwrap().items[0].total_tokens,
+        1390
+    );
+    let exporter = UsageExporter::new(query.clone());
+    let output = root.join("zcode-export.json");
+    exporter
+        .export_to_path(
+            &ExportRequest {
+                scope: ExportScope::Sessions,
+                format: ExportFormat::Json,
+                filters: filters(Some("zcode")),
+                privacy: ExportPrivacy::Anonymous,
+            },
+            output.to_str().unwrap(),
+        )
+        .unwrap();
+    let exported = fs::read_to_string(output).unwrap();
+    assert!(exported.contains("\"agent\": \"zcode\""));
+    assert!(!exported.contains(SECRET));
+    assert!(!exported.contains("C:/work/shared"));
+    assert_eq!(
+        fs::read(root.join("zcode/cli/db/db.sqlite-wal")).unwrap(),
+        before
+    );
+    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().files_total, 0);
+
+    // Same row count, timestamp and field width; the WAL has not checkpointed.
+    db.execute("UPDATE model_usage SET output_tokens=100 WHERE id='r1'", [])
+        .unwrap();
+    let changes = source.plan(&store.source_checkpoints().unwrap()).unwrap();
+    assert_eq!(changes.changes.len(), 1);
+    // Cancelling a replay preserves the last committed analytical snapshot.
+    assert!(
+        store
+            .apply_source_change(
+                source.as_ref(),
+                &changes.changes[0],
+                &store.pricing_catalog().unwrap(),
+                chrono_tz::UTC,
+                30 * 60 * 1000,
+                &AtomicBool::new(true)
+            )
+            .is_err()
+    );
+    assert_eq!(
+        query
+            .session_detail("zcode:same-id")
+            .unwrap()
+            .session
+            .total_tokens,
+        1390
+    );
+    let status = indexer.sync(SyncMode::Incremental).unwrap();
+    assert_eq!((status.files_total, status.file_errors), (1, 0));
+    assert_eq!(
+        query
+            .session_detail("zcode:same-id")
+            .unwrap()
+            .session
+            .total_tokens,
+        1290
+    );
+    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().files_total, 0);
+    store
+        .with_reader(|connection| {
+            assert_eq!(
+                connection.query_row(
+                    "SELECT COUNT(*) FROM usage_events WHERE agent='zcode'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                3
+            );
+            Ok(())
+        })
+        .unwrap();
+    for entry in fs::read_dir(root).unwrap().flatten().filter(|e| {
+        e.file_name()
+            .to_string_lossy()
+            .starts_with("analysis.sqlite3")
+    }) {
+        assert!(
+            !fs::read(entry.path())
+                .unwrap()
+                .windows(SECRET.len())
+                .any(|w| w == SECRET.as_bytes())
+        );
+    }
+}
+
+#[test]
+fn zcode_legacy_ledger_has_unknown_timing_and_missing_sources_keep_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir_all(root.join("zcode/cli/db")).unwrap();
+    let path = root.join("zcode/cli/db/db.sqlite");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE session(id TEXT,directory TEXT);
+        CREATE TABLE model_usage(id TEXT,session_id TEXT,started_at INTEGER,model_id TEXT,status TEXT,input_tokens INTEGER,output_tokens INTEGER);
+        INSERT INTO session VALUES ('legacy','C:/work/shared');").unwrap();
+    let time = Utc::now().timestamp_millis() - 100_000;
+    for (id, start) in [("a", time), ("b", time + 20_000)] {
+        db.execute(
+            "INSERT INTO model_usage VALUES (?1,'legacy',?2,'glm-5.3-flash','completed',100,20)",
+            params![id, start],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let (store, source, indexer) = setup(root);
+    // An explicitly selected database file follows the same discovery route.
+    let mut settings = source.settings();
+    settings.zcode = Some(path.to_string_lossy().into());
+    settings.validate().unwrap();
+    source.configure(settings);
+    assert_eq!(indexer.sync(SyncMode::Initial).unwrap().file_errors, 0);
+    let query = UsageQuery::new(store.clone(), chrono_tz::UTC);
+    let session = query.session_detail("zcode:legacy").unwrap().session;
+    assert_eq!((session.total_tokens, session.active_ms), (240, 0));
+    assert_eq!(session.active_method, "unknown");
+    assert_eq!(session.tokens_per_second, None);
+    assert_eq!(session.average_first_token_latency_ms, None);
+    let dashboard = query.dashboard(&filters(Some("zcode"))).unwrap();
+    assert!(!dashboard.hero.active_timing_available);
+    assert!(!query.workspaces(&list(Some("zcode"))).unwrap().items[0].active_timing_available);
+    assert_eq!(
+        query.models(&list(Some("zcode"))).unwrap().items[0].average_tokens_per_second,
+        None
+    );
+    fs::remove_file(&path).unwrap();
+    assert_eq!(indexer.sync(SyncMode::Incremental).unwrap().file_errors, 0);
+    assert_eq!(
+        query
+            .session_detail("zcode:legacy")
+            .unwrap()
+            .session
+            .total_tokens,
+        240
+    );
+}
+
+#[test]
+fn zcode_unsupported_schema_does_not_block_other_sources() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir_all(root.join("zcode/cli/db")).unwrap();
+    let db = Connection::open(root.join("zcode/cli/db/db.sqlite")).unwrap();
+    db.execute_batch("CREATE TABLE session(id TEXT,directory TEXT)")
+        .unwrap();
+    write_lines(
+        &root.join("claude/projects/project/same-id.jsonl"),
+        &[claude_message("cc", Utc::now().timestamp_millis(), 30, 40)],
+    );
+    let (store, _, indexer) = setup(root);
+    let status = indexer.sync(SyncMode::Initial).unwrap();
+    assert_eq!(
+        status.error_counts.get("zcode:unsupported_zcode_schema"),
+        Some(&1)
+    );
+    assert_eq!(
+        UsageQuery::new(store, chrono_tz::UTC)
+            .sessions(&list(Some("claude")))
+            .unwrap()
+            .total,
+        1
+    );
+}
+
+#[test]
+fn agents_keep_separate_workspaces_and_never_persist_content() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let time = Utc::now().timestamp_millis() - 60_000;
@@ -159,7 +812,26 @@ fn agents_share_workspaces_keep_identity_and_never_persist_content() {
     let status = indexer.sync(SyncMode::Initial).unwrap();
     assert_eq!(status.file_errors, 0, "{:?}", status.error_counts);
     let query = Arc::new(UsageQuery::new(store.clone(), chrono_tz::UTC));
-    assert_eq!(query.workspaces(&list(None)).unwrap().total, 1);
+    let workspaces = query.workspaces(&list(None)).unwrap();
+    assert_eq!(workspaces.total, 3);
+    for (label, sessions) in [
+        ("Codex-shared", 1),
+        ("Claude Code-shared", 2),
+        ("OpenCode-shared", 1),
+    ] {
+        let workspace = workspaces.items.iter().find(|w| w.label == label).unwrap();
+        let mut request = list(None);
+        request.filters.workspace_id = Some(workspace.id.clone());
+        assert_eq!(query.sessions(&request).unwrap().total, sessions);
+        assert_eq!(
+            query
+                .dashboard(&request.filters)
+                .unwrap()
+                .hero
+                .real_total_tokens,
+            workspace.total_tokens
+        );
+    }
     assert_eq!(query.sessions(&list(None)).unwrap().total, 4);
     let cc = query.sessions(&list(Some("claude"))).unwrap();
     assert_eq!(cc.total, 2);
@@ -204,6 +876,11 @@ fn agents_share_workspaces_keep_identity_and_never_persist_content() {
     assert_eq!(dashboard.hero.real_total_tokens, 105);
     assert_eq!(dashboard.hero.cache_write_tokens, 10);
     assert_eq!(dashboard.filter_options.providers[0].value, "anthropic");
+    assert_eq!(dashboard.filter_options.workspaces.len(), 1);
+    assert_eq!(
+        dashboard.filter_options.workspaces[0].label,
+        "OpenCode-shared"
+    );
     assert_eq!(
         query
             .heatmap(&HeatmapQuery {
@@ -933,7 +1610,7 @@ fn official_peak_and_context_brackets_survive_repricing_and_event_retention() {
         Some(6_625_002)
     );
     store
-        .delete_model_price("deepseek-official", "deepseek-v4-pro")
+        .restore_builtin_price("deepseek-official", "deepseek-v4-pro")
         .unwrap();
     store.reprice_all(chrono_tz::UTC).unwrap();
     assert_eq!(
@@ -1049,6 +1726,7 @@ fn workbuddy_variants_merge_native_usage_skip_abnormal_calls_and_keep_missing_ti
     write_lines(&first, &[a.clone(), repeated, abnormal, failed_tool]);
     let mut b = sample("b", time + 60_000);
     b["providerData"]["usage"]["inputTokensDetails"] = json!([{"cached_tokens":200}]);
+    b["providerData"]["requestModelId"] = json!("unknown");
     write_lines(&copy, &[a, b]);
     let database = Connection::open(root.join("workbuddy-ai/workbuddy.db")).unwrap();
     database.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE sessions(id TEXT,cwd TEXT,created_at INTEGER,updated_at INTEGER,status TEXT,deleted_at INTEGER); CREATE TABLE session_usage(session_id TEXT, used INTEGER, size INTEGER, credit_json TEXT);").unwrap();

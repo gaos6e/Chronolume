@@ -74,8 +74,8 @@ export function SourceConnections({ syncing, onSaved }: { syncing: boolean; onSa
         </div>;
       })}
       <div className="source-path-actions"><button type="button" className="quiet-button" disabled={save.isPending || syncing} onClick={() => setDraft({})}><RotateCcw />{t('恢复自动发现')}</button><button type="submit" className="primary-button" disabled={save.isPending || syncing}>{t('保存并同步')}</button></div>
-      <p className="form-hint">{t('留空使用环境变量或默认目录。OpenCode 也可填写数据库文件的绝对路径。')}</p>
-      {editing === 'workbuddy' && <p className="form-hint">{t('三个来源合并展示，只统计原生会话记录中的用量。缺少原生计时显示为 —。')}</p>}
+      <p className="form-hint">{t('留空使用环境变量或默认目录。OpenCode 和 Z Code 也可填写数据库文件的绝对路径。')}</p>
+      {(editing === 'workbuddy' || editing === 'antigravity') && <p className="form-hint">{t('三个来源合并展示，只统计原生会话记录中的用量。缺少原生计时显示为 —。')}</p>}
       <ActionFeedback pending={save.isPending} error={save.error ?? browseError} />
     </form>}
     <p className="connections-footnote"><LockKeyhole />{t('不读取账号凭据，不安装 hook，不修改 agent 的原始数据。')}</p>

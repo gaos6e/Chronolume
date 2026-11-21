@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Chronolume",
   "mainBinaryName": "chronolume",
-  "version": "2.3.3",
+  "version": "2.4.0",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -14,10 +14,11 @@
       {
         "label": "main",
         "title": "Chronolume",
-        "width": 1280,
-        "height": 800,
+        "width": 1600,
+        "height": 1100,
         "minWidth": 1100,
         "minHeight": 680,
+        "preventOverflow": true,
         "center": true,
         "resizable": true,
         "fullscreen": false

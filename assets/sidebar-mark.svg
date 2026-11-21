@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Chronolume">
+  <defs>
+    <linearGradient id="bg" x1="52" y1="468" x2="460" y2="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#273044"/>
+      <stop offset="1" stop-color="#475472"/>
+    </linearGradient>
+    <linearGradient id="arc" x1="106" y1="413" x2="365" y2="87" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#d44951"/>
+      <stop offset=".45" stop-color="#f0776d"/>
+      <stop offset="1" stop-color="#ffcfb7"/>
+    </linearGradient>
+    <linearGradient id="hand" x1="240" y1="284" x2="432" y2="76" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#eb5055"/>
+      <stop offset=".55" stop-color="#ff8874"/>
+      <stop offset="1" stop-color="#ffdfc9"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="122" fill="url(#bg)"/>
+  <path d="M359 96 A194 194 0 1 0 436 333 L364 304 A116 116 0 1 1 318 162 Z" fill="url(#arc)"/>
+  <path d="M240 284 L432 76 V148 Z" fill="url(#hand)"/>
+</svg>

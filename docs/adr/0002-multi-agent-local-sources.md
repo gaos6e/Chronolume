@@ -8,7 +8,7 @@
 
 `UsageSource` 继承原来源的 `detect/plan/stream` 边界，`CodexSource` 保留为兼容名称。生产使用 `MultiAgentSource` 编排 Codex 和新增来源；每个解析器只输出现有结构化记录及必要的缓存写入、报告成本和父会话元数据。查询、索引、保留、导出继续共用现有实现。
 
-agent 由稳定会话命名空间导出。Schema 5 为既有记录赋予 `codex`，不重命名历史 ID；新会话使用 `claude:`、`opencode:`、`dsh:`。生成列避免 agent 与会话 ID 之间出现不一致；每日全局汇总把 agent 加入主键。Schema 6 扩展 DeepSeek Harness 身份及每日汇总约束，保留 Schema 5 三个来源的会话与摘要。工作区身份继续由原路径规则决定，不按 agent 拆分。
+agent 由稳定会话命名空间导出。Schema 5 为既有记录赋予 `codex`，不重命名历史 ID；新会话使用 `claude:`、`opencode:`、`dsh:`。生成列避免 agent 与会话 ID 之间出现不一致；每日全局汇总把 agent 加入主键。Schema 6 扩展 DeepSeek Harness 身份及每日汇总约束，保留 Schema 5 三个来源的会话与摘要。Schema 5 和 6 按路径合并各 agent 的工作区。自 Schema 14 起，工作区按 agent 和路径独立标识，详见[数据模型](../data-model.md)。
 
 模型提供方保持独立。旧 Codex adapter 继续使用原有 `openai/custom/unknown` 规则，新增来源保留原生提供方；查询只兼容已知的历史 `codex_local_access` 别名。用户定价也按实际提供方保存。Anthropic 标准价格随内置快照交付，不新增在线账户或自动价格接口。
 

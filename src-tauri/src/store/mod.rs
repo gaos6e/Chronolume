@@ -17,7 +17,10 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 
 use crate::error::{AppError, AppResult};
-use crate::pricing::{canonical_model_name, model_strength_sort_key};
+use crate::pricing::{
+    canonical_model_name, canonical_pricing_id, legacy_model_name, model_strength_sort_key,
+    model_vendor,
+};
 
 const MIGRATIONS: &[(i64, &str)] = &[
     // Data-only migrations also run for databases whose source events expired.
@@ -48,6 +51,26 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../../migrations/0008_flash_model_identity.sql"),
     ),
     (9, include_str!("../../migrations/0009_workbuddy.sql")),
+    (
+        10,
+        concat!(
+            include_str!("../../migrations/merge_model_usage.sql"),
+            include_str!("../../migrations/0010_shared_model_identity.sql")
+        ),
+    ),
+    (11, include_str!("../../migrations/0011_zcode.sql")),
+    (12, include_str!("../../migrations/0012_antigravity.sql")),
+    (
+        13,
+        concat!(
+            include_str!("../../migrations/merge_model_usage.sql"),
+            include_str!("../../migrations/0013_reasoning_effort.sql")
+        ),
+    ),
+    (
+        14,
+        include_str!("../../migrations/0014_agent_workspaces.sql"),
+    ),
 ];
 
 /// v2 分析库的深 Module。连接配置、迁移、池化和事务策略留在实现内部。
@@ -181,15 +204,42 @@ impl UsageStore {
 fn configure_connection(connection: &mut Connection) -> rusqlite::Result<()> {
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.set_prepared_statement_cache_capacity(128);
+    let deterministic = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+    connection.create_scalar_function("workspace_basename", 1, deterministic, |context| {
+        Ok(ingest::workspace_basename(context.get_raw(0).as_str()?).to_owned())
+    })?;
+    connection.create_scalar_function("workspace_label", 2, deterministic, |context| {
+        Ok(crate::source::agents::workspace_label(
+            context.get_raw(0).as_str()?,
+            context.get_raw(1).as_str()?,
+        ))
+    })?;
     connection.create_scalar_function(
         "canonical_model_name",
         1,
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |context| {
             let model = context.get::<Option<String>>(0)?;
-            Ok(model.map(|model| canonical_model_name(&model)))
+            Ok(model.map(|model| legacy_model_name(&model)))
         },
     )?;
+    for (name, canonicalize) in [
+        (
+            "current_model_name",
+            canonical_model_name as fn(&str) -> String,
+        ),
+        ("current_pricing_id", canonical_pricing_id),
+    ] {
+        connection.create_scalar_function(
+            name,
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            move |context| {
+                let model = context.get::<Option<String>>(0)?;
+                Ok(model.as_deref().map(canonicalize))
+            },
+        )?;
+    }
     connection.create_scalar_function(
         "canonical_sol_model_name",
         1,
@@ -199,7 +249,7 @@ fn configure_connection(connection: &mut Connection) -> rusqlite::Result<()> {
             // Freeze migration 7's original alias scope when upgrading older
             // databases; Flash prices and summary collisions are handled by 8.
             Ok(model.map(|model| {
-                let canonical = canonical_model_name(&model);
+                let canonical = legacy_model_name(&model);
                 if canonical == "gpt-6.1-sol" {
                     canonical
                 } else {
@@ -215,6 +265,15 @@ fn configure_connection(connection: &mut Connection) -> rusqlite::Result<()> {
         |context| {
             let model = context.get::<String>(0)?;
             Ok(model_strength_sort_key(&model))
+        },
+    )?;
+    connection.create_scalar_function(
+        "model_vendor",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let model = context.get::<String>(0)?;
+            Ok(model_vendor(&model))
         },
     )?;
     connection.execute_batch(
@@ -293,7 +352,7 @@ mod tests {
             }
             drop(connection);
             let store = UsageStore::open(&path).unwrap();
-            assert_eq!(store.schema_version().unwrap(), 9);
+            assert_eq!(store.schema_version().unwrap(), 14);
             assert_eq!(store.app_setting("builtin-pricing-revision").unwrap(), None);
             store.with_reader(|connection| {
                 let summary:(i64,i64,i64,i64)=connection.query_row("SELECT total_tokens,active_ms,priced_cost_microusd,session_count FROM daily_usage_rollups WHERE model_raw='deepseek-v4.1-flash'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
@@ -362,14 +421,13 @@ mod tests {
         }
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 9);
+        assert_eq!(store.schema_version().unwrap(), 14);
         store.with_reader(|connection| {
             assert_eq!(connection.query_row("SELECT primary_model_raw FROM sessions WHERE id='mixed'",[],|r|r.get::<_,String>(0))?,"gpt-6.1-sol");
             let daily:(i64,i64,i64,i64,i64)=connection.query_row("SELECT total_tokens,active_ms,priced_cost_microusd,cache_write_tokens,reported_cost_microusd FROM session_daily_usage WHERE session_id='mixed' AND model_raw='gpt-6.1-sol'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
             assert_eq!(daily,(70,70,70,2,70));
-            assert_eq!(connection.query_row("SELECT input_per_million_usd FROM model_prices WHERE provider='openai' AND pricing_id='gpt-6.1-sol'",[],|r|r.get::<_,String>(0))?,"9");
-            assert_eq!(connection.query_row("SELECT input_per_million_usd FROM model_prices WHERE provider='gateway' AND pricing_id='gpt-6.1-sol'",[],|r|r.get::<_,String>(0))?,"3");
-            assert_eq!(connection.query_row("SELECT COUNT(*) FROM model_prices",[],|r|r.get::<_,i64>(0))?,2);
+            assert_eq!(connection.query_row("SELECT input_per_million_usd FROM model_prices WHERE pricing_id='gpt-6.1-sol'",[],|r|r.get::<_,String>(0))?,"3");
+            assert_eq!(connection.query_row("SELECT COUNT(*) FROM model_prices",[],|r|r.get::<_,i64>(0))?,1);
             let rollup:(i64,i64,i64)=connection.query_row("SELECT total_tokens,session_count,priced_cost_microusd FROM daily_usage_rollups WHERE model_raw='gpt-6.1-sol'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
             assert_eq!(rollup,(90,2,90));
             assert_eq!(connection.query_row("SELECT SUM(total_tokens) FROM session_daily_usage",[],|r|r.get::<_,i64>(0))?,150);
@@ -378,6 +436,15 @@ mod tests {
             }
             Ok(())
         }).unwrap();
+        store.seed_builtin_prices().unwrap();
+        let prices = store.model_prices(false).unwrap();
+        let price = prices
+            .iter()
+            .find(|price| price.pricing_id == "gpt-6.1-sol")
+            .unwrap();
+        assert_eq!(price.provider, "openai");
+        assert_eq!(price.input_per_million_usd, "3");
+        assert!(price.is_overridden);
         assert!(store.integrity_check().unwrap());
         assert_eq!(
             store.app_setting("activity").unwrap().as_deref(),
@@ -389,7 +456,7 @@ mod tests {
     fn creates_required_schema_and_passes_integrity_check() {
         let store = UsageStore::open_in_memory().expect("open test database");
 
-        assert_eq!(store.schema_version().expect("schema version"), 9);
+        assert_eq!(store.schema_version().expect("schema version"), 14);
         assert!(store.integrity_check().expect("integrity check"));
 
         let required = [
@@ -422,6 +489,161 @@ mod tests {
     }
 
     #[test]
+    fn merges_retained_effort_variants_and_preserves_edited_prices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.sqlite");
+        let mut connection = database_at_version(&path, 12);
+        {
+            let tx = connection.transaction().unwrap();
+            tx.execute_batch("INSERT INTO workspaces(id,normalized_path,display_name,created_at_ms,updated_at_ms)
+                VALUES ('w','project','project',0,0);
+                INSERT INTO sessions(id,workspace_id,synthetic_title,parser_version,updated_at_ms,latest_model_raw)
+                VALUES ('antigravity:s','w','s',0,0,'gemini-4-neon-medium');").unwrap();
+            for (id, input, cached) in [("gemini-4-neon", 100, 50), ("gemini-4-neon-medium", 10, 0)]
+            {
+                tx.execute("INSERT INTO session_daily_usage(session_id,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,
+                    workspace_id,model_provider,model_raw,pricing_model_id,archived,input_tokens,cached_input_tokens,total_tokens)
+                    VALUES ('antigravity:s','2026-11-20','UTC',0,1,'w','unknown',?1,?1,0,?2,?3,?2)", rusqlite::params![id,input,cached]).unwrap();
+                tx.execute("INSERT INTO daily_usage_rollups(agent,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,
+                    workspace_id,model_provider,model_raw,pricing_model_id,archived,session_count,input_tokens,cached_input_tokens,total_tokens)
+                    VALUES ('antigravity','2026-11-20','UTC',0,1,'w','unknown',?1,?1,0,1,?2,?3,?2)", rusqlite::params![id,input,cached]).unwrap();
+            }
+            tx.execute_batch("INSERT INTO model_prices(pricing_id,provider,display_name,input_per_million_usd,output_per_million_usd,
+                cache_read_per_million_usd,default_input_per_million_usd,default_output_per_million_usd,default_cache_read_per_million_usd,
+                is_builtin,is_overridden,revision,created_at_ms,updated_at_ms)
+                VALUES ('gemini-4-neon','google','gemini-4-neon','3','15','0.15','3','15','0.15',1,0,1,0,2),
+                       ('gemini-4-neon-medium','google','My Neon','8','20','1','8','20','1',0,0,1,0,1);").unwrap();
+            tx.commit().unwrap();
+        }
+        drop(connection);
+        let store = UsageStore::open(path).unwrap();
+        store.with_reader(|db| {
+            assert_eq!(db.query_row("SELECT COUNT(*),SUM(input_tokens),SUM(cached_input_tokens) FROM session_daily_usage WHERE model_raw='gemini-4-neon'", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?)))?, (1,110,50));
+            assert_eq!(db.query_row("SELECT session_count FROM daily_usage_rollups WHERE model_raw='gemini-4-neon'", [], |r| r.get::<_,i64>(0))?, 1);
+            assert_eq!(db.query_row("SELECT latest_model_raw FROM sessions",[],|r|r.get::<_,String>(0))?, "gemini-4-neon");
+            assert_eq!(db.query_row("SELECT input_per_million_usd FROM model_prices WHERE pricing_id='gemini-4-neon'",[],|r|r.get::<_,String>(0))?, "8");
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn migrates_v10_and_v11_preserving_all_agent_rollups() {
+        for version in [10, 11] {
+            check_agent_rollup_migration(version);
+        }
+    }
+
+    fn database_at_version(path: &Path, previous_version: i64) -> Connection {
+        let mut connection = Connection::open(path).unwrap();
+        configure_connection(&mut connection).unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at_ms INTEGER NOT NULL) STRICT;").unwrap();
+        for (version, sql) in MIGRATIONS
+            .iter()
+            .filter(|(version, _)| *version <= previous_version)
+        {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations VALUES (?1,'previous',0)",
+                    [version],
+                )
+                .unwrap();
+        }
+        connection
+    }
+
+    fn check_agent_rollup_migration(previous_version: i64) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("previous.sqlite3");
+        let connection = database_at_version(&path, previous_version);
+        connection.execute_batch("INSERT INTO workspaces(id,normalized_path,display_name,created_at_ms,updated_at_ms) VALUES ('w','C:/work/shared','shared',0,0)").unwrap();
+        let mut agents = vec!["codex", "claude", "opencode", "dsh", "workbuddy"];
+        if previous_version == 11 {
+            agents.push("zcode");
+        }
+        for &agent in &agents {
+            let id = if agent == "codex" {
+                "existing".into()
+            } else {
+                format!("{agent}:existing")
+            };
+            connection.execute("INSERT INTO sessions(id,workspace_id,synthetic_title,parser_version,updated_at_ms,total_tokens) VALUES (?1,'w','Session',11,0,123)",[id]).unwrap();
+            connection.execute("INSERT INTO daily_usage_rollups(agent,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,workspace_id,model_provider,model_raw,archived,total_tokens,cache_write_tokens,reported_cost_microusd) VALUES (?1,'2026-11-06','UTC',0,1,'w','provider','model',0,123,17,456)",[agent]).unwrap();
+            connection.execute("INSERT INTO daily_tool_rollups(agent,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,workspace_id,archived,tool_name,category,operation_kind,call_count) VALUES (?1,'2026-11-06','UTC',0,1,'w',0,'bash','execute','unknown',7)",[agent]).unwrap();
+        }
+        drop(connection);
+        let store = UsageStore::open(path).unwrap();
+        store.with_reader(|connection| {
+            for &agent in &agents {
+                assert_eq!(connection.query_row("SELECT total_tokens FROM sessions WHERE agent=?1",[agent],|r|r.get::<_,i64>(0))?,123);
+                let totals = connection.query_row("SELECT total_tokens,cache_write_tokens,reported_cost_microusd FROM daily_usage_rollups WHERE agent=?1",[agent],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?)))?;
+                assert_eq!(totals,(123,17,456));
+                assert_eq!(connection.query_row("SELECT call_count FROM daily_tool_rollups WHERE agent=?1",[agent],|r|r.get::<_,i64>(0))?,7);
+            }
+            Ok(())
+        }).unwrap();
+        assert!(store.integrity_check().unwrap());
+    }
+
+    #[test]
+    fn splits_v13_workspace_history_and_preferences_by_agent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v13.sqlite3");
+        let connection = database_at_version(&path, 13);
+        connection.execute_batch(r#"
+            INSERT INTO workspaces VALUES ('w','C:/work/Gaos','My project','My project',1,0,0);
+            INSERT INTO app_settings VALUES ('activity','{"idleGapMinutes":45,"visibleWorkspaceIds":["w"]}',0);
+            INSERT INTO sessions(id,workspace_id,synthetic_title,parser_version,updated_at_ms)
+                VALUES ('s','w','Session',1,0), ('claude:s','w','Session',1,0);
+            INSERT INTO session_daily_usage(session_id,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,workspace_id,model_provider,model_raw,archived,total_tokens)
+                VALUES ('s','2026-01-01','UTC',0,1,'w','p','m',0,17), ('claude:s','2026-01-01','UTC',0,1,'w','p','m',0,23);
+            INSERT INTO session_daily_tool(session_id,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,workspace_id,archived,tool_name,category,operation_kind,call_count)
+                VALUES ('claude:s','2026-01-01','UTC',0,1,'w',0,'Read','read','read_only',3);
+            INSERT INTO daily_usage_rollups(agent,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,workspace_id,model_provider,model_raw,archived,total_tokens)
+                SELECT agent,local_date,timezone_id,0,1,workspace_id,model_provider,model_raw,archived,total_tokens FROM session_daily_usage;
+            INSERT INTO daily_tool_rollups(agent,local_date,timezone_id,day_start_utc_ms,day_end_utc_ms,workspace_id,archived,tool_name,category,operation_kind,call_count)
+                SELECT agent,local_date,timezone_id,0,1,workspace_id,archived,tool_name,category,operation_kind,call_count FROM session_daily_tool;
+        "#).unwrap();
+        drop(connection);
+        let store = UsageStore::open(path).unwrap();
+        let prefs: serde_json::Value =
+            serde_json::from_str(&store.app_setting("activity").unwrap().unwrap()).unwrap();
+        assert_eq!(
+            prefs,
+            serde_json::json!({"idleGapMinutes":45, "visibleWorkspaceIds":["claude:w","w"]})
+        );
+        store.with_reader(|db| {
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM workspaces WHERE ignored=1 AND alias='My project'", [], |r| r.get::<_, i64>(0))?, 2);
+            for table in ["sessions", "session_daily_usage", "session_daily_tool", "daily_usage_rollups", "daily_tool_rollups"] {
+                let sql = format!("SELECT COUNT(*) FROM {table} d JOIN workspaces w ON w.id=d.workspace_id WHERE d.agent <> w.agent");
+                assert_eq!(db.query_row(&sql, [], |r| r.get::<_, i64>(0))?, 0, "{table}");
+            }
+            assert_eq!(db.query_row("SELECT total_tokens FROM daily_usage_rollups WHERE workspace_id='claude:w'", [], |r| r.get::<_, i64>(0))?, 23);
+            assert_eq!(db.query_row("SELECT call_count FROM daily_tool_rollups WHERE workspace_id='claude:w'", [], |r| r.get::<_, i64>(0))?, 3);
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get::<_, i64>(0))?, 0);
+            Ok(())
+        }).unwrap();
+        store
+            .update_workspace_settings("claude:w", None, false)
+            .unwrap();
+        store
+            .with_reader(|db| {
+                let labels = db
+                    .prepare("SELECT label, ignored FROM named_workspaces ORDER BY agent")?
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(
+                    labels,
+                    [
+                        ("Claude Code-Gaos".into(), false),
+                        ("Codex-My project".into(), true)
+                    ]
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+    #[test]
     fn migrates_v5_preserving_each_agent_rollup_and_cache_summary() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("v5.sqlite3");
@@ -448,7 +670,7 @@ mod tests {
         }
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 9);
+        assert_eq!(store.schema_version().unwrap(), 14);
         store.with_reader(|connection| {
             for agent in ["codex","claude","opencode"] {
                 let session:(i64,i64,i64) = connection.query_row("SELECT total_tokens,cache_write_tokens,reported_cost_microusd FROM sessions WHERE agent=?1",[agent],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
@@ -556,7 +778,7 @@ mod tests {
         connection.execute_batch("INSERT INTO source_files (source_key, relative_path, source_kind, file_size, mtime_ns, prefix_hash, parser_version, safe_offset, complete_line_offset, open_task_turn_id, open_task_started_at_ms) VALUES ('jsonl:existing', 'sessions/existing.jsonl', 'session', 1000, 1, 'hash', 10, 123, 123, 'existing-turn', 1000);").unwrap();
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 9);
+        assert_eq!(store.schema_version().unwrap(), 14);
         let checkpoint = store.source_checkpoints().unwrap().remove(0);
         assert_eq!(checkpoint.cursor.safe_offset, 123);
         assert_eq!(checkpoint.parser_version, 10);
@@ -584,7 +806,7 @@ mod tests {
         connection.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at_ms INTEGER NOT NULL) STRICT; INSERT INTO schema_migrations VALUES (2, 'migration_0002', 0); INSERT INTO source_files (source_key, relative_path, source_kind, file_size, mtime_ns, prefix_hash, parser_version, safe_offset, complete_line_offset, open_task_turn_id, open_task_started_at_ms, contains_embedded_history) VALUES ('jsonl:existing', 'sessions/existing.jsonl', 'session', 1000, 1, 'hash', 8, 123, 123, 'existing-turn', 1000, 1);").unwrap();
         drop(connection);
         let store = UsageStore::open(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 9);
+        assert_eq!(store.schema_version().unwrap(), 14);
         let checkpoint = store.source_checkpoints().unwrap().remove(0);
         assert_eq!(checkpoint.cursor.safe_offset, 123);
         assert_eq!(
@@ -625,7 +847,7 @@ mod tests {
         drop(connection);
 
         let store = UsageStore::open(&path).expect("migrate store");
-        assert_eq!(store.schema_version().expect("schema version"), 9);
+        assert_eq!(store.schema_version().expect("schema version"), 14);
         store
             .with_reader(|connection| {
                 let column_exists: i64 = connection.query_row(

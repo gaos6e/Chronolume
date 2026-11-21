@@ -1,13 +1,14 @@
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 pub mod official;
 
 pub const OFFICIAL_PRICING_SOURCE: &str = "https://developers.openai.com/api/docs/pricing";
-pub const BUILTIN_PRICING_REVISION: i64 = 2_026_111_701;
+pub const BUILTIN_PRICING_REVISION: i64 = 2_026_112_101;
 pub const ANTHROPIC_PRICING_SOURCE: &str =
     "https://platform.claude.com/docs/en/about-claude/pricing";
 
@@ -53,8 +54,8 @@ pub enum PriceQuote {
 
 #[derive(Debug, Clone, Default)]
 pub struct PricingCatalog {
-    prices: Vec<ModelPrice>,
-    overrides: HashSet<(String, String)>,
+    prices: HashMap<String, ModelPrice>,
+    overrides: HashSet<String>,
 }
 
 pub fn builtin_model_prices() -> Vec<ModelPrice> {
@@ -152,23 +153,23 @@ pub fn builtin_model_prices() -> Vec<ModelPrice> {
 }
 
 impl PricingCatalog {
-    pub fn new(mut prices: Vec<ModelPrice>) -> Self {
-        prices.sort_by(|left, right| {
-            right
-                .pricing_id
-                .len()
-                .cmp(&left.pricing_id.len())
-                .then_with(|| left.pricing_id.cmp(&right.pricing_id))
-        });
+    pub fn new(prices: Vec<ModelPrice>) -> Self {
         Self {
-            prices,
+            prices: prices
+                .into_iter()
+                .map(|price| (price.pricing_id.clone(), price))
+                .collect(),
             overrides: HashSet::new(),
         }
     }
 
-    pub fn with_overrides(mut self, overrides: HashSet<(String, String)>) -> Self {
+    pub fn with_overrides(mut self, overrides: HashSet<String>) -> Self {
         self.overrides = overrides;
         self
+    }
+
+    pub(crate) fn has_price(&self, pricing_id: &str) -> bool {
+        self.prices.contains_key(pricing_id)
     }
 
     pub fn quote(&self, provider: &str, raw_model: &str, tokens: PriceableTokens) -> PriceQuote {
@@ -206,70 +207,34 @@ impl PricingCatalog {
         stored_id: Option<&str>,
     ) -> PriceQuote {
         let normalized = normalize_model_id(raw_model);
-        let provider = provider.trim().to_ascii_lowercase();
-        if is_cost_excluded(&provider, &normalized.exact) {
+        if is_cost_excluded(provider, &normalized.exact) {
             return PriceQuote::Excluded;
         }
-        let exact_price = normalized
+        if matches!(normalized.exact.as_str(), "" | "unknown") {
+            return PriceQuote::Unpriced;
+        }
+        let Some(mut price) = normalized
             .candidates
             .iter()
-            .find_map(|candidate| self.find_exact(&provider, candidate));
-        let price = exact_price
-            .or_else(|| {
-                normalized.candidates.iter().find_map(|candidate| {
-                    self.find_exact(official::provider_alias(&provider), candidate)
-                })
-            })
-            .or_else(|| {
-                normalized
-                    .candidates
-                    .iter()
-                    .find_map(|candidate| self.find_exact(official::vendor(candidate)?, candidate))
-            });
-        let Some(mut price) = price else {
+            .find_map(|candidate| self.prices.get(candidate))
+        else {
             return PriceQuote::Unpriced;
         };
-        let overridden = self
-            .overrides
-            .contains(&(price.provider.clone(), price.pricing_id.clone()));
+        let overridden = self.overrides.contains(&price.pricing_id);
         let tier = if let Some(stored) = stored_id {
             stored
                 .split_once('@')
-                .filter(|(base, _)| *base == price.pricing_id)
-                .map(|_| stored.to_string())
+                .filter(|(base, _)| canonical_model_name(base) == price.pricing_id)
+                .map(|(_, suffix)| format!("{}@{suffix}", price.pricing_id))
         } else {
             official::tier_id(&price.provider, &price.pricing_id, tokens, at)
-                .or_else(|| {
-                    overridden
-                        .then(|| {
-                            official::tier_id(
-                                official::provider_alias(&price.provider),
-                                &price.pricing_id,
-                                tokens,
-                                at,
-                            )
-                        })
-                        .flatten()
-                })
-                .or_else(|| {
-                    overridden
-                        .then(|| {
-                            official::tier_id(
-                                official::vendor(&price.pricing_id)?,
-                                &price.pricing_id,
-                                tokens,
-                                at,
-                            )
-                        })
-                        .flatten()
-                })
         };
         // Keep the original request bracket even while a flat user override is
         // active, so restoring official prices after retention remains lossless.
         let accounting_id = tier.clone().unwrap_or_else(|| price.pricing_id.clone());
         if !overridden {
             if let Some(tier) = tier {
-                let Some(bracket) = self.find_exact(&price.provider, &tier) else {
+                let Some(bracket) = self.prices.get(&tier) else {
                     return PriceQuote::Unpriced;
                 };
                 price = bracket;
@@ -277,7 +242,7 @@ impl PricingCatalog {
         }
         if tokens.cache_write_1h > tokens.cache_write
             || (tokens.cached_input > 0
-                && !overridden
+                && !self.overrides.contains(&price.pricing_id)
                 && !official::cache_read_known(&price.provider, &price.pricing_id))
             || (tokens.cache_write_1h > 0
                 && !matches!(price.provider.as_str(), "anthropic" | "moonshotai"))
@@ -305,13 +270,6 @@ impl PricingCatalog {
             total_microusd,
         }
     }
-
-    fn find_exact(&self, provider: &str, pricing_id: &str) -> Option<&ModelPrice> {
-        self.prices.iter().find(|price| {
-            price.provider.eq_ignore_ascii_case(provider)
-                && price.pricing_id.eq_ignore_ascii_case(pricing_id)
-        })
-    }
 }
 
 pub fn canonical_model_provider(raw: &str) -> String {
@@ -336,20 +294,9 @@ pub fn is_cost_excluded(_provider: &str, model: &str) -> bool {
     is_statistics_excluded_model(model)
 }
 
-/// Unify explicitly confirmed model identities; unrelated suffixes retain their
-/// existing meaning, including other vendors' Fast and Free variants.
-pub fn canonical_model_name(raw: &str) -> String {
-    let mut name = raw
-        .trim()
-        .rsplit('/')
-        .next()
-        .unwrap_or(raw)
-        .to_ascii_lowercase();
-    if let Some((base, effort)) = name.split_once(':')
-        && matches!(effort, "minimal" | "low" | "medium" | "high" | "xhigh")
-    {
-        name = base.to_string();
-    }
+/// Older migrations use their original, limited alias set.
+pub(crate) fn legacy_model_name(raw: &str) -> String {
+    let mut name = model_slug(raw);
     loop {
         match name.as_str() {
             "gpt-6.1-sol" | "gpt-6.1-sol-fast" => return "gpt-6.1-sol".into(),
@@ -358,29 +305,93 @@ pub fn canonical_model_name(raw: &str) -> String {
             }
             _ => {}
         }
-        let Some(next) = strip_iso_date_suffix(&name)
-            .or_else(|| strip_compact_date_suffix(&name))
-            .or_else(|| strip_reasoning_suffix(&name))
-        else {
+        let Some(next) = strip_snapshot_suffix(&name) else {
             return raw.to_string();
         };
         name = next;
     }
 }
 
+/// Platform labels collapse into the underlying model. Vendor variants such
+/// as Flash, FlashX, and Preview keep their own model identities.
+pub fn canonical_model_name(raw: &str) -> String {
+    let slug = model_slug(raw);
+    let slug = strip_effort_label(&slug).unwrap_or(&slug).to_owned();
+    let mut name = slug.clone();
+    let mut route_base = None;
+    loop {
+        if name == "gpt-6.1-sol" {
+            return name;
+        }
+        if let Some(id) = official::identity(&name) {
+            return if id != name || route_base.is_some() {
+                id.to_string()
+            } else {
+                slug
+            };
+        }
+        if let Some(base) = ["-free", "-fast", ":free", ":fast", "_free", "_fast"]
+            .iter()
+            .find_map(|suffix| name.strip_suffix(suffix))
+            .filter(|base| !base.is_empty())
+            .or_else(|| {
+                name.strip_suffix("free")
+                    .or_else(|| name.strip_suffix("fast"))
+                    .filter(|base| official::identity(base).is_some())
+            })
+        {
+            name = strip_effort_label(base).unwrap_or(base).to_owned();
+            route_base = Some(name.clone());
+        } else if let Some(base) = strip_snapshot_suffix(&name) {
+            name = base;
+        } else {
+            return route_base.unwrap_or(slug);
+        }
+    }
+}
+
+fn model_slug(raw: &str) -> String {
+    let name = raw
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .to_ascii_lowercase();
+    if name == "(unknown)" {
+        return "unknown".into();
+    }
+    if let Some((base, effort)) = name.split_once(':')
+        && matches!(effort, "minimal" | "low" | "medium" | "high" | "xhigh")
+    {
+        base.to_string()
+    } else {
+        name
+    }
+}
+
+fn strip_snapshot_suffix(value: &str) -> Option<String> {
+    strip_iso_date_suffix(value)
+        .or_else(|| strip_compact_date_suffix(value))
+        .or_else(|| strip_reasoning_suffix(value))
+}
+
+pub(crate) fn canonical_pricing_id(raw: &str) -> String {
+    raw.split_once('@').map_or_else(
+        || canonical_model_name(raw),
+        |(base, tier)| {
+            format!(
+                "{}@{}",
+                canonical_model_name(base),
+                tier.trim().to_ascii_lowercase()
+            )
+        },
+    )
+}
+
 /// 生成从最具体到最宽泛的计价候选，先统一已确认的模型身份。
 pub fn normalize_model_id(raw: &str) -> NormalizedModelId {
-    let mut exact = canonical_model_name(raw).trim().to_ascii_lowercase();
-    if let Some(last) = exact.rsplit('/').next()
-        && last != exact
-    {
-        exact = last.to_string();
-    }
-    if let Some((prefix, suffix)) = exact.split_once(':')
-        && matches!(suffix, "minimal" | "low" | "medium" | "high" | "xhigh")
-    {
-        exact = prefix.to_string();
-    }
+    let exact = canonical_model_name(raw);
 
     let mut candidates = vec![exact.clone()];
     let mut index = 0;
@@ -390,11 +401,36 @@ pub fn normalize_model_id(raw: &str) -> NormalizedModelId {
         push_candidate(&mut candidates, strip_compact_date_suffix(&candidate));
         push_candidate(&mut candidates, strip_reasoning_suffix(&candidate));
         push_candidate(&mut candidates, historical_tier_alias(&candidate));
-        push_candidate(&mut candidates, official::alias(&candidate));
         index += 1;
     }
 
     NormalizedModelId { exact, candidates }
+}
+
+/// Resolve a model's vendor using the same identities as the built-in catalog.
+pub(crate) fn model_vendor(model: &str) -> &'static str {
+    static VENDORS: OnceLock<HashMap<String, String>> = OnceLock::new();
+    let vendors = VENDORS.get_or_init(|| {
+        builtin_model_prices()
+            .into_iter()
+            .map(|price| (price.pricing_id, price.provider))
+            // Identity is known even when the vendor has no standard hosted rate.
+            .chain([
+                ("gpt-reserve".into(), "openai".into()),
+                ("gpt-oss-120b".into(), "openai".into()),
+                ("gpt-oss-20b".into(), "openai".into()),
+                ("nemotron-3.5-super-vl-120b-a12b".into(), "nvidia".into()),
+                ("nemotron-3-ultra-550b-a55b".into(), "nvidia".into()),
+            ])
+            .collect()
+    });
+    vendors.get(model).map(String::as_str).unwrap_or_else(|| {
+        normalize_model_id(model)
+            .candidates
+            .iter()
+            .find_map(|candidate| vendors.get(candidate).map(String::as_str))
+            .unwrap_or("unknown")
+    })
 }
 
 /// 为已经下架且官方价格表不再单列的 Codex 型号提供可审计的同层级回退。
@@ -492,6 +528,38 @@ fn strip_compact_date_suffix(value: &str) -> Option<String> {
 fn strip_reasoning_suffix(value: &str) -> Option<String> {
     let (prefix, suffix) = value.rsplit_once('-')?;
     matches!(suffix, "minimal" | "low" | "medium" | "high" | "xhigh").then(|| prefix.to_string())
+}
+
+fn strip_effort_label(value: &str) -> Option<&str> {
+    // Some names contain a model tier (e.g. Qwen4-Max or GPT-5.1-Codex-Max).
+    // Reserve the ambiguous bare "-max"/"-ultra" spellings for supported families.
+    let (base, effort, explicit) =
+        if let Some((base, effort)) = value.strip_suffix(')').and_then(|v| v.rsplit_once('(')) {
+            (base.trim_end(), effort.trim(), true)
+        } else if let Some(base) = value.strip_suffix("-extra-high") {
+            return (!base.is_empty()).then_some(base);
+        } else {
+            let pos = value.rfind(['-', ':', '_', ' '])?;
+            (
+                &value[..pos],
+                &value[pos + 1..],
+                value.as_bytes()[pos] != b'-',
+            )
+        };
+    let known = match effort {
+        "minimal" | "low" | "medium" | "high" | "xhigh" | "extra" | "extra-high" | "extra high" => {
+            true
+        }
+        "thinking" => base.starts_with("claude-"),
+        "max" | "ultra" | "none" => {
+            explicit
+                || base.starts_with("claude-")
+                || (base.starts_with("gpt-") && !base.ends_with("-codex"))
+                || base.starts_with("gemini-4-")
+        }
+        _ => false,
+    };
+    (known && !base.is_empty()).then_some(base)
 }
 
 #[cfg(test)]
@@ -671,7 +739,7 @@ mod tests {
     #[test]
     fn adds_provider_date_and_reasoning_candidates() {
         let normalized = normalize_model_id("OpenAI/GPT-5.6-2026-07-10-high");
-        assert_eq!(normalized.exact, "gpt-5.6-2026-07-10-high");
+        assert_eq!(normalized.exact, "gpt-5.6-2026-07-10");
         assert!(
             normalized
                 .candidates
@@ -810,107 +878,76 @@ mod tests {
     }
 
     #[test]
-    fn requested_alias_is_the_same_model_identity_and_does_not_generalize() {
+    fn platform_labels_share_model_identity_and_official_rates() {
         let catalog = PricingCatalog::new(builtin_model_prices());
-        for provider in ["openai", "custom", "gateway"] {
-            assert_eq!(
-                catalog.quote(provider, "openai/gpt-6.1-sol-fast-high", usage(1_000_000)),
-                catalog.quote("openai", "gpt-6.1-sol", usage(1_000_000))
-            );
-        }
-        assert_eq!(
-            catalog.quote("openai", "gpt-6-astra-fast", usage(1)),
-            PriceQuote::Unpriced
-        );
-        assert_eq!(normalize_model_id("gpt-6.1-sol-fast").exact, "gpt-6.1-sol");
-    }
-
-    #[test]
-    fn official_vendor_references_keep_route_and_user_prices_prioritized() {
-        let mut prices = builtin_model_prices();
-        prices.push(ModelPrice {
-            provider: "gateway".into(),
-            pricing_id: "deepseek-v4-pro".into(),
-            input_per_million_usd: Decimal::from(9),
-            output_per_million_usd: Decimal::from(10),
-            cache_read_per_million_usd: Decimal::ZERO,
-            cache_write_per_million_usd: None,
-            revision: 1,
-        });
-        let catalog = PricingCatalog::new(prices);
-        assert!(matches!(
-            catalog.quote("deepseek-official", "deepseek-v4-pro", usage(1_000_000)),
-            PriceQuote::Priced {
-                total_microusd: 1_320_000,
-                ..
-            }
-        ));
-        assert!(matches!(
-            catalog.quote("opencode", "deepseek-v4-pro", usage(1_000_000)),
-            PriceQuote::Priced {
-                total_microusd: 1_740_000,
-                ..
-            }
-        ));
-        assert!(matches!(
-            catalog.quote("gateway", "deepseek-v4-pro", usage(1_000_000)),
-            PriceQuote::Priced {
-                total_microusd: 9_000_000,
-                ..
-            }
-        ));
-        for provider in ["opencode", "deepseek", "gateway"] {
-            for time in ["2026-10-27T02:00:00Z", "2026-10-27T12:00:00Z"] {
-                assert_eq!(
-                    catalog.quote_at(
-                        provider,
-                        "deepseek-v4.1-flash-free",
-                        usage(1_000_000),
-                        at(time)
+        for (alias, model, expected) in [
+            ("google/gemini-4-neon-xhigh", "gemini-4-neon", 3_000_000),
+            ("gemini-4-neon (medium)", "gemini-4-neon", 3_000_000),
+            ("claude-opus-5-5-high", "claude-opus-5-5", 4_000_000),
+            ("OpenAI/GPT-6.1-Sol-Fast-high", "gpt-6.1-sol", 2_000_000),
+            ("gpt-6-astra-fast", "gpt-6-astra", 10_000_000),
+            ("hy4free", "hy4", 834_000),
+            ("hy4-preview-f", "hy4-preview", 834_000),
+            ("kimi-k3-1", "kimi-k3.1-pro", 2_000_000),
+            ("glm5.3", "glm-5.3", 1_400_000),
+            ("glm5.3flashfree", "glm-5.3-flash", 150_000),
+            ("glm-5.3-flash-free", "glm-5.3-flash", 150_000),
+            ("mimo-v2.6-flash-free", "mimo-v2.6-flash", 140_000),
+        ] {
+            assert_eq!(canonical_model_name(alias), model);
+            for provider in ["workbuddy", "opencode", "custom", "unknown"] {
+                assert!(
+                    matches!(
+                        catalog.quote(provider, alias, usage(1_000_000)),
+                        PriceQuote::Priced { pricing_id, total_microusd, .. }
+                            if pricing_id == model && total_microusd == expected
                     ),
-                    catalog.quote_at(provider, "deepseek-v4.1-flash", usage(1_000_000), at(time))
+                    "{provider}/{alias}"
                 );
             }
         }
-        assert!(matches!(
-            catalog.quote("opencode", "deepseek-v4.1-flash-free", usage(1_000_000)),
-            PriceQuote::Priced {
-                total_microusd: 300_000,
-                ..
-            }
-        ));
-        assert_eq!(
-            canonical_model_name("opencode/DeepSeek-V4.1-Flash-Free:high"),
-            "deepseek-v4.1-flash"
-        );
-        assert_eq!(
-            canonical_model_name("glm-5.3-flash-free"),
-            "glm-5.3-flash-free"
-        );
-        assert!(matches!(
-            catalog.quote("opencode", "glm-5.3-flash-free", usage(1_000_000)),
-            PriceQuote::Priced {
-                total_microusd: 0,
-                ..
-            }
-        ));
-        for (provider, id) in [
-            ("custom", "gemini-3.8-flash"),
-            ("google-vertex", "gemini-2.5-pro"),
-            ("zhipu", "glm-5.3"),
-            ("custom", "kimi-k3"),
-            ("dashscope", "qwen3.8-flash"),
-            ("custom", "minimax-m3"),
-            ("x-ai", "grok-4.7"),
-        ] {
-            assert!(
-                matches!(
-                    catalog.quote(provider, id, usage(100)),
-                    PriceQuote::Priced { .. }
-                ),
-                "{provider}/{id}"
-            );
+        for model in ["qwen4-max", "gpt-5.1-codex-max", "qwen3-thinking"] {
+            assert_eq!(canonical_model_name(model), model);
         }
+        assert_eq!(model_vendor("gpt-reserve"), "openai");
+        assert_eq!(model_vendor("gemini-4-neon-medium"), "google");
+        for provider in ["opencode", "deepseek-official", "workbuddy"] {
+            for (time, expected) in [
+                ("2026-10-27T02:00:00Z", 300_000),
+                ("2026-10-27T12:00:00Z", 150_000),
+            ] {
+                assert!(matches!(
+                    catalog.quote_at(provider, "deepseek-v4.1-flash-free", usage(1_000_000), at(time)),
+                    PriceQuote::Priced { total_microusd, .. } if total_microusd == expected
+                ));
+            }
+        }
+        assert_eq!(
+            catalog.quote("opencode", "nemotron-3.5-super-vl-free", usage(1_000_000)),
+            PriceQuote::Unpriced
+        );
+        assert_eq!(
+            canonical_model_name("nemotron-3.5-super-vl-free"),
+            "nemotron-3.5-super-vl-120b-a12b"
+        );
+        assert!(matches!(
+            catalog.quote("opencode", "qwen3.8-max", usage(1_000_000)),
+            PriceQuote::Priced {
+                total_microusd: 2_000_000,
+                ..
+            }
+        ));
+        assert_eq!(
+            catalog.quote(
+                "opencode",
+                "qwen3.8-max",
+                PriceableTokens {
+                    cached_input: 1,
+                    ..usage(1_000_000)
+                },
+            ),
+            PriceQuote::Unpriced
+        );
     }
 
     #[test]
@@ -1011,7 +1048,7 @@ mod tests {
                 4_000_000,
             ),
             (
-                "workbuddy",
+                "tencent",
                 "hy4-flash",
                 "2026-11-30T03:59:59Z",
                 "2026-11-30T04:00:00Z",
@@ -1061,10 +1098,7 @@ mod tests {
     #[test]
     fn official_catalog_has_unique_keys_and_traceable_sources() {
         let prices = builtin_model_prices();
-        let keys: HashSet<_> = prices
-            .iter()
-            .map(|p| (&p.provider, &p.pricing_id))
-            .collect();
+        let keys: HashSet<_> = prices.iter().map(|p| &p.pricing_id).collect();
         assert_eq!(keys.len(), prices.len());
         for price in prices {
             assert!(

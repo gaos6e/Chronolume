@@ -2,14 +2,15 @@ use std::collections::BTreeMap;
 
 use chrono::{Days, Utc};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{OptionalExtension, params, params_from_iter};
+use rusqlite::{OptionalExtension, params_from_iter};
 use serde::{Deserialize, Serialize};
 
 use super::{
     UsageFilters, UsageQuery, cache_hit_rate_sql, canonical_provider_sql, push_agent, push_archive,
-    rollup_conditions,
+    push_model_vendors, rollup_conditions,
 };
 use crate::error::{AppError, AppResult};
+use crate::pricing::model_vendor;
 use crate::source::PARSER_VERSION;
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,6 +47,8 @@ pub struct WorkspaceRow {
     pub active_timing_available: bool,
     pub id: String,
     pub label: String,
+    pub agent: String,
+    pub alias: Option<String>,
     pub normalized_path: String,
     pub ignored: bool,
     pub session_count: i64,
@@ -62,6 +65,7 @@ pub struct WorkspaceRow {
 pub struct WorkspaceCatalogItem {
     pub value: String,
     pub label: String,
+    pub agent: String,
     pub normalized_path: String,
 }
 
@@ -84,6 +88,7 @@ pub struct SessionRow {
     pub active_method: String,
     pub active_is_estimate: bool,
     pub model_provider: String,
+    pub model_vendor: String,
     pub latest_model: String,
     pub total_tokens: i64,
     pub input_tokens: i64,
@@ -239,6 +244,7 @@ pub struct UsageEventRow {
     pub id: i64,
     pub occurred_at_ms: i64,
     pub provider: String,
+    pub model_vendor: String,
     pub model: String,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
@@ -335,9 +341,7 @@ impl UsageQuery {
             }
         }
         if !query.search.trim().is_empty() {
-            condition.push_str(
-                " AND (COALESCE(w.alias, w.display_name) LIKE ? OR w.normalized_path LIKE ?)",
-            );
+            condition.push_str(" AND (w.label LIKE ? OR w.normalized_path LIKE ?)");
             let needle = format!("%{}%", query.search.trim());
             values.push(SqlValue::Text(needle.clone()));
             values.push(SqlValue::Text(needle));
@@ -348,7 +352,7 @@ impl UsageQuery {
             let count_sql = format!(
                 "SELECT COUNT(*) FROM (
                     SELECT w.id FROM session_daily_usage d
-                    JOIN workspaces w ON w.id = d.workspace_id
+                    JOIN named_workspaces w ON w.id = d.workspace_id
                     WHERE {condition} GROUP BY w.id
                  )"
             );
@@ -357,12 +361,13 @@ impl UsageQuery {
                     row.get(0)
                 })?;
             let sql = format!(
-                "SELECT w.id, COALESCE(w.alias, w.display_name), w.normalized_path, w.ignored,
+                "SELECT w.id, w.label, w.normalized_path, w.ignored,
                         COUNT(DISTINCT d.session_id), SUM(d.total_tokens),
                         SUM(d.priced_cost_microusd), SUM(d.priced_event_count),
                         SUM(d.unpriced_event_count), SUM(d.active_ms),
-                        COUNT(DISTINCT d.local_date), MAX(d.last_activity_at_ms), MAX(d.agent <> 'workbuddy' OR d.active_ms > 0)
-                 FROM session_daily_usage d JOIN workspaces w ON w.id = d.workspace_id
+                        COUNT(DISTINCT d.local_date), MAX(d.last_activity_at_ms), MAX(d.agent NOT IN ('workbuddy', 'zcode', 'antigravity') OR d.active_ms > 0),
+                        w.agent, w.alias
+                 FROM session_daily_usage d JOIN named_workspaces w ON w.id = d.workspace_id
                  WHERE {condition} GROUP BY w.id
                  ORDER BY {order} {direction}, w.id ASC LIMIT ? OFFSET ?"
             );
@@ -374,7 +379,9 @@ impl UsageQuery {
                 .query_map(params_from_iter(paged_values.iter()), |row| {
                     let priced_events: i64 = row.get(7)?;
                     Ok(WorkspaceRow {
-                active_timing_available: row.get(12)?,
+                        active_timing_available: row.get(12)?,
+                        agent: row.get(13)?,
+                        alias: row.get(14)?,
                         id: row.get(0)?,
                         label: row.get(1)?,
                         normalized_path: row.get(2)?,
@@ -403,12 +410,12 @@ impl UsageQuery {
     pub fn workspace_catalog(&self) -> AppResult<Vec<WorkspaceCatalogItem>> {
         self.store.with_reader(|connection| {
             let mut statement = connection.prepare(
-                "SELECT w.id, COALESCE(w.alias, w.display_name), w.normalized_path
-                 FROM workspaces w
+                "SELECT w.id, w.label, w.normalized_path, w.agent
+                 FROM named_workspaces w
                  WHERE w.ignored = 0
                  ORDER BY COALESCE((SELECT MAX(s.ended_at_ms) FROM sessions s
                                     WHERE s.workspace_id = w.id), w.updated_at_ms) DESC,
-                          COALESCE(w.alias, w.display_name) COLLATE NOCASE ASC",
+                          w.label COLLATE NOCASE ASC",
             )?;
             statement
                 .query_map([], |row| {
@@ -416,6 +423,7 @@ impl UsageQuery {
                         value: row.get(0)?,
                         label: row.get(1)?,
                         normalized_path: row.get(2)?,
+                        agent: row.get(3)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()
@@ -423,43 +431,52 @@ impl UsageQuery {
         })
     }
 
-    pub fn sessions(&self, query: &ListQuery) -> AppResult<Page<SessionRow>> {
-        let (page, page_size, offset) = page_args(query.page, query.page_size);
-        let range = self.resolve_range(&query.filters.range, Utc::now().timestamp_millis())?;
+    fn session_conditions(
+        &self,
+        filters: &UsageFilters,
+    ) -> AppResult<(Vec<String>, Vec<SqlValue>)> {
+        let range = self.resolve_range(&filters.range, Utc::now().timestamp_millis())?;
         let mut clauses = vec![
             "s.workspace_id IN (SELECT id FROM workspaces WHERE ignored = 0)".to_string(),
             "COALESCE(s.ended_at_ms, s.started_at_ms, 0) >= ?".to_string(),
             "COALESCE(s.started_at_ms, 0) < ?".to_string(),
-            "LOWER(TRIM(COALESCE(NULLIF(s.primary_model_raw, ''), s.latest_model_raw))) \
-             <> 'codex-auto-review'"
-                .to_string(),
+            format!("LOWER(TRIM({SESSION_MODEL_SQL})) <> 'codex-auto-review'"),
         ];
         let mut values = vec![
             SqlValue::Integer(range.start_ms),
             SqlValue::Integer(range.end_ms),
         ];
-        if let Some(workspace) = query.filters.workspace_id.as_deref() {
+        if let Some(workspace) = filters.workspace_id.as_deref() {
             clauses.push("s.workspace_id = ?".into());
             values.push(SqlValue::Text(workspace.into()));
         }
-        if let Some(provider) = query.filters.model_provider.as_deref() {
+        if let Some(provider) = filters.model_provider.as_deref() {
             clauses.push(format!(
                 "{} = ?",
                 canonical_provider_sql("s.model_provider")
             ));
             values.push(SqlValue::Text(provider.into()));
         }
-        if let Some(model) = query.filters.model.as_deref() {
-            clauses
-                .push("COALESCE(NULLIF(s.primary_model_raw, ''), s.latest_model_raw) = ?".into());
+        if let Some(model) = filters.model.as_deref() {
+            clauses.push(format!("{SESSION_MODEL_SQL} = ?"));
             values.push(SqlValue::Text(crate::pricing::canonical_model_name(model)));
         }
-        push_agent(&mut clauses, &mut values, &query.filters, "s");
-        push_archive(&mut clauses, &mut values, query.filters.archived, "s");
+        push_agent(&mut clauses, &mut values, filters, "s");
+        push_archive(&mut clauses, &mut values, filters.archived, "s");
+        Ok((clauses, values))
+    }
+
+    pub fn sessions(&self, query: &ListQuery) -> AppResult<Page<SessionRow>> {
+        let (page, page_size, offset) = page_args(query.page, query.page_size);
+        let (mut clauses, mut values) = self.session_conditions(&query.filters)?;
+        push_model_vendors(
+            &mut clauses,
+            &mut values,
+            &query.filters.model_vendors,
+            SESSION_MODEL_SQL,
+        );
         if !query.search.trim().is_empty() {
-            clauses.push(
-                "(s.synthetic_title LIKE ? OR COALESCE(w.alias, w.display_name) LIKE ?)".into(),
-            );
+            clauses.push("(s.synthetic_title LIKE ? OR w.label LIKE ?)".into());
             let needle = format!("%{}%", query.search.trim());
             values.push(SqlValue::Text(needle.clone()));
             values.push(SqlValue::Text(needle));
@@ -474,7 +491,7 @@ impl UsageQuery {
         };
         self.store.with_reader(|connection| {
             let count_sql = format!(
-                "SELECT COUNT(*) FROM sessions s JOIN workspaces w ON w.id = s.workspace_id WHERE {condition}"
+                "SELECT COUNT(*) FROM sessions s JOIN named_workspaces w ON w.id = s.workspace_id WHERE {condition}"
             );
             let total: i64 = connection.query_row(
                 &count_sql,
@@ -483,16 +500,16 @@ impl UsageQuery {
             )?;
             let sql = format!(
                 "SELECT s.id, s.synthetic_title, s.workspace_id,
-                        COALESCE(w.alias, w.display_name), s.started_at_ms, s.ended_at_ms,
+                        w.label, s.started_at_ms, s.ended_at_ms,
                         s.active_ms, s.active_method, s.active_is_estimate,
-                        {provider}, COALESCE(NULLIF(s.primary_model_raw, ''), s.latest_model_raw),
+                        {provider}, {SESSION_MODEL_SQL},
                         s.total_tokens,
                         s.input_tokens, s.fresh_input_tokens, s.cached_input_tokens,
                         s.output_tokens, s.reasoning_tokens, s.estimated_cost_microusd,
                         s.unpriced_event_count, s.archived, s.integrity_status,
                         l.average_latency_ms, COALESCE(l.sample_count, 0),
                         s.agent, s.parent_session_id, s.cache_write_tokens, s.cache_write_1h_tokens, s.reported_cost_microusd
-                 FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
+                 FROM sessions s JOIN named_workspaces w ON w.id = s.workspace_id
                  {latency_join}
                  WHERE {condition}
                  ORDER BY {nulls_last}{order} {direction}, s.id ASC LIMIT ? OFFSET ?",
@@ -514,10 +531,7 @@ impl UsageQuery {
         let (page, page_size, offset) = page_args(query.page, query.page_size);
         let range = self.resolve_range(&query.filters.range, Utc::now().timestamp_millis())?;
         let (mut condition, mut values) = rollup_conditions(&query.filters, &range, "d");
-        condition.push_str(
-            " AND TRIM(LOWER(d.model_raw)) NOT IN ('', 'unknown', '(unknown)')\
-              AND TRIM(LOWER(d.model_provider)) NOT IN ('', 'unknown', '(unknown)')",
-        );
+        condition.push_str(" AND TRIM(LOWER(d.model_raw)) NOT IN ('', 'unknown', '(unknown)')");
         if !query.search.trim().is_empty() {
             condition.push_str(" AND d.model_raw LIKE ?");
             let needle = format!(
@@ -647,12 +661,18 @@ impl UsageQuery {
             clauses.push("d.model_raw = ?".into());
             values.push(SqlValue::Text(crate::pricing::canonical_model_name(model)));
         }
+        push_model_vendors(
+            &mut clauses,
+            &mut values,
+            &query.filters.model_vendors,
+            "d.model_raw",
+        );
         push_agent(&mut clauses, &mut values, &query.filters, "d");
         push_archive(&mut clauses, &mut values, query.filters.archived, "d");
         let rows = self.store.with_reader(|connection| {
             let sql = format!(
                 "SELECT d.local_date, COUNT(DISTINCT d.session_id),
-                        SUM(d.total_tokens), SUM(d.active_ms), MAX(d.agent <> 'workbuddy' OR d.active_ms > 0)
+                        SUM(d.total_tokens), SUM(d.active_ms), MAX(d.agent NOT IN ('workbuddy', 'zcode', 'antigravity') OR d.active_ms > 0)
                  FROM session_daily_usage d WHERE {}
                  GROUP BY d.local_date ORDER BY d.local_date",
                 clauses.join(" AND ")
@@ -791,20 +811,19 @@ impl UsageQuery {
             let session = connection
                 .query_row(
                     &format!("SELECT s.id, s.synthetic_title, s.workspace_id,
-                            COALESCE(w.alias, w.display_name), s.started_at_ms, s.ended_at_ms,
+                            w.label, s.started_at_ms, s.ended_at_ms,
                             s.active_ms, s.active_method, s.active_is_estimate,
-                            {provider}, COALESCE(NULLIF(s.primary_model_raw, ''), s.latest_model_raw),
+                            {provider}, {SESSION_MODEL_SQL},
                             s.total_tokens,
                             s.input_tokens, s.fresh_input_tokens, s.cached_input_tokens,
                             s.output_tokens, s.reasoning_tokens, s.estimated_cost_microusd,
                             s.unpriced_event_count, s.archived, s.integrity_status,
                             l.average_latency_ms, COALESCE(l.sample_count, 0),
                         s.agent, s.parent_session_id, s.cache_write_tokens, s.cache_write_1h_tokens, s.reported_cost_microusd
-                     FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
+                     FROM sessions s JOIN named_workspaces w ON w.id = s.workspace_id
                      {latency_join}
                      WHERE s.id = ?1
-                       AND LOWER(TRIM(COALESCE(NULLIF(s.primary_model_raw, ''), s.latest_model_raw)))
-                           <> 'codex-auto-review'",
+                       AND LOWER(TRIM({SESSION_MODEL_SQL})) <> 'codex-auto-review'",
                         provider = canonical_provider_sql("s.model_provider"),
                         latency_join = SESSION_LATENCY_JOIN_SQL,
                     ),
@@ -905,16 +924,7 @@ impl UsageQuery {
                     ),
                 )?;
                 statement
-                    .query_map([session_id], |row| {
-                        Ok(UsageEventRow {
-                            cache_write_tokens: row.get(11)?, cache_write_1h_tokens: row.get(12)?, reported_cost_microusd: row.get(13)?,
-                            id: row.get(0)?, occurred_at_ms: row.get(1)?, provider: row.get(2)?,
-                            model: row.get(3)?, input_tokens: row.get(4)?,
-                            cached_input_tokens: row.get(5)?, output_tokens: row.get(6)?,
-                            reasoning_tokens: row.get(7)?, total_tokens: row.get(8)?,
-                            estimated_cost_microusd: row.get(9)?, integrity_status: row.get(10)?,
-                        })
-                    })?
+                    .query_map([session_id], usage_event_from_row)?
                     .collect::<Result<Vec<_>, _>>()?
             };
             Ok(SessionDetail {
@@ -929,13 +939,20 @@ impl UsageQuery {
         session_id: &str,
         page: u32,
         requested_page_size: u32,
+        vendors: &[String],
     ) -> AppResult<Page<UsageEventRow>> {
         let (page, page_size, offset) = page_args(page, requested_page_size);
+        let mut clauses = vec![
+            "session_id = ?".to_string(),
+            "LOWER(TRIM(model_raw)) <> 'codex-auto-review'".to_string(),
+        ];
+        let mut values = vec![SqlValue::Text(session_id.into())];
+        push_model_vendors(&mut clauses, &mut values, vendors, "model_raw");
+        let condition = clauses.join(" AND ");
         self.store.with_reader(|connection| {
             let total: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM usage_events
-                 WHERE session_id = ?1 AND LOWER(TRIM(model_raw)) <> 'codex-auto-review'",
-                [session_id],
+                &format!("SELECT COUNT(*) FROM usage_events WHERE {condition}"),
+                params_from_iter(values.iter()),
                 |row| row.get(0),
             )?;
             let mut statement = connection.prepare(&format!(
@@ -943,15 +960,16 @@ impl UsageQuery {
                         input_tokens, cached_input_tokens, output_tokens,
                         reasoning_tokens, total_tokens, estimated_cost_microusd, integrity_status, cache_write_tokens, cache_write_1h_tokens, reported_cost_microusd
                  FROM usage_events
-                 WHERE session_id = ?1 AND LOWER(TRIM(model_raw)) <> 'codex-auto-review'
-                 ORDER BY occurred_at_ms DESC, id DESC LIMIT ?2 OFFSET ?3",
+                 WHERE {condition}
+                 ORDER BY occurred_at_ms DESC, id DESC LIMIT ? OFFSET ?",
                 provider = canonical_provider_sql("model_provider")
             ))?;
+            values.extend([
+                SqlValue::Integer(i64::from(page_size)),
+                SqlValue::Integer(offset),
+            ]);
             let items = statement
-                .query_map(
-                    params![session_id, i64::from(page_size), offset],
-                    usage_event_from_row,
-                )?
+                .query_map(params_from_iter(values.iter()), usage_event_from_row)?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Page {
                 items,
@@ -1018,6 +1036,8 @@ impl UsageQuery {
     }
 }
 
+const SESSION_MODEL_SQL: &str = "COALESCE(NULLIF(s.primary_model_raw, ''), s.latest_model_raw)";
+
 // Aggregate timing separately so joining it cannot multiply usage totals.
 const SESSION_LATENCY_JOIN_SQL: &str = "LEFT JOIN (
     SELECT session_id, AVG(latency_ms) AS average_latency_ms, COUNT(*) AS sample_count
@@ -1037,6 +1057,7 @@ fn tokens_per_second(output_tokens: i64, active_ms: i64) -> Option<f64> {
 }
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
+    let model: String = row.get(10)?;
     Ok(SessionRow {
         active_timing_available: row.get::<_, String>(7)? != "unknown",
         agent: row.get(23)?,
@@ -1054,7 +1075,8 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         active_method: row.get(7)?,
         active_is_estimate: row.get::<_, i64>(8)? != 0,
         model_provider: row.get(9)?,
-        latest_model: row.get(10)?,
+        model_vendor: model_vendor(&model).into(),
+        latest_model: model,
         total_tokens: row.get(11)?,
         input_tokens: row.get(12)?,
         fresh_input_tokens: row.get(13)?,
@@ -1072,6 +1094,7 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
 }
 
 fn usage_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEventRow> {
+    let model: String = row.get(3)?;
     Ok(UsageEventRow {
         cache_write_tokens: row.get(11)?,
         cache_write_1h_tokens: row.get(12)?,
@@ -1079,7 +1102,8 @@ fn usage_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEventR
         id: row.get(0)?,
         occurred_at_ms: row.get(1)?,
         provider: row.get(2)?,
-        model: row.get(3)?,
+        model_vendor: model_vendor(&model).into(),
+        model,
         input_tokens: row.get(4)?,
         cached_input_tokens: row.get(5)?,
         output_tokens: row.get(6)?,
@@ -1102,7 +1126,7 @@ fn workspace_order(sort: &str) -> &'static str {
         "cost" => "SUM(d.priced_cost_microusd)",
         "active_time" => "SUM(d.active_ms)",
         "sessions" => "COUNT(DISTINCT d.session_id)",
-        "name" => "COALESCE(w.alias, w.display_name) COLLATE NOCASE",
+        "name" => "w.label COLLATE NOCASE",
         _ => "MAX(d.last_activity_at_ms)",
     }
 }
@@ -1150,7 +1174,10 @@ fn tool_conditions(
     }
     push_agent(&mut clauses, &mut values, filters, "t");
     push_archive(&mut clauses, &mut values, filters.archived, "t");
-    if filters.model_provider.is_some() || filters.model.is_some() {
+    if filters.model_provider.is_some()
+        || filters.model.is_some()
+        || !filters.model_vendors.is_empty()
+    {
         let mut nested = vec!["u.session_id = t.session_id".to_string()];
         if let Some(provider) = filters.model_provider.as_deref() {
             nested.push(format!(
@@ -1162,6 +1189,15 @@ fn tool_conditions(
         if let Some(model) = filters.model.as_deref() {
             nested.push("u.model_raw = ?".into());
             values.push(SqlValue::Text(crate::pricing::canonical_model_name(model)));
+        }
+        if !filters.model_vendors.is_empty() {
+            nested.push("u.local_date = t.local_date".into());
+            push_model_vendors(
+                &mut nested,
+                &mut values,
+                &filters.model_vendors,
+                "u.model_raw",
+            );
         }
         clauses.push(format!(
             "EXISTS (SELECT 1 FROM session_daily_usage u WHERE {})",
@@ -1216,6 +1252,7 @@ impl Serialize for HeatmapSpan {
 mod tests {
     use super::*;
     use crate::query::{ArchiveFilter, RangePreset, RangeSelection};
+    use rusqlite::params;
 
     fn filters() -> UsageFilters {
         UsageFilters {
@@ -1228,6 +1265,7 @@ mod tests {
             },
             workspace_id: None,
             model_provider: None,
+            model_vendors: Vec::new(),
             model: None,
             archived: ArchiveFilter::All,
         }
@@ -1262,7 +1300,7 @@ mod tests {
                 ("s2", "gpt-5.6-sol", "openai", 600, 200, 30000, 1),
                 ("s3", "gpt-null", "openai", 50, 10, 0, 0),
                 ("s4", "gpt-zero", "openai", 0, 0, 1000, 0),
-                ("s5", "gpt-fast", "anthropic", 100, 25, 1000, 0),
+                ("s5", "gpt-quick", "anthropic", 100, 25, 1000, 0),
             ] {
                 transaction.execute(
                     "INSERT INTO sessions (
@@ -1315,7 +1353,7 @@ mod tests {
                 ("s2", "gpt-other", "openai", "2026-07-10", 500),
                 ("s2", "gpt-5.6-sol", "codex_local_access", "2026-07-11", 19000),
                 ("s4", "gpt-zero", "openai", "2026-07-10", 0),
-                ("s5", "gpt-fast", "anthropic", "2026-07-10", 250),
+                ("s5", "gpt-quick", "anthropic", "2026-07-10", 250),
                 ("s1", "codex-auto-review", "openai", "2026-07-10", 1000000),
             ].into_iter().enumerate() {
                 transaction.execute(
@@ -1411,7 +1449,7 @@ mod tests {
                 vec![
                     "gpt-5.6-sol",
                     "gpt-other",
-                    "gpt-fast",
+                    "gpt-quick",
                     "gpt-zero",
                     "gpt-null",
                 ],
@@ -1421,7 +1459,7 @@ mod tests {
                 vec!["s4", "s5", "s1", "s2", "s3"],
                 vec![
                     "gpt-zero",
-                    "gpt-fast",
+                    "gpt-quick",
                     "gpt-other",
                     "gpt-5.6-sol",
                     "gpt-null",
@@ -1544,7 +1582,7 @@ mod tests {
                 .iter()
                 .map(|row| row.model.as_str())
                 .collect::<Vec<_>>(),
-            vec!["gpt-fast", "gpt-other", "gpt-5.6-sol", "gpt-zero"],
+            vec!["gpt-quick", "gpt-other", "gpt-5.6-sol", "gpt-zero"],
         );
         let model = models
             .items
@@ -1595,7 +1633,7 @@ mod tests {
         );
         request.filters.model_provider = Some("custom".into());
         assert!(query.models(&request).unwrap().items.is_empty());
-        request.filters.model = Some("gpt-fast".into());
+        request.filters.model = Some("gpt-quick".into());
         assert!(query.models(&request).unwrap().items.is_empty());
         request.filters.model_provider = Some("anthropic".into());
         assert_eq!(
@@ -1614,7 +1652,7 @@ mod tests {
                 true,
                 vec!["s5", "s1", "s2", "s4", "s3"],
                 vec![
-                    "gpt-fast",
+                    "gpt-quick",
                     "gpt-other",
                     "gpt-5.6-sol",
                     "gpt-zero",
@@ -1628,7 +1666,7 @@ mod tests {
                     "gpt-zero",
                     "gpt-5.6-sol",
                     "gpt-other",
-                    "gpt-fast",
+                    "gpt-quick",
                     "gpt-null",
                 ],
             ),
@@ -1670,12 +1708,200 @@ mod tests {
     }
 
     #[test]
+    fn session_vendor_filters_match_model_identity_across_routes_before_paging() {
+        let query = latency_query();
+        query
+            .store
+            .with_writer(|transaction| {
+                transaction.execute(
+                    "UPDATE sessions SET primary_model_raw = 'claude-sonnet-4-6',
+                        model_provider = 'custom' WHERE id = 's5'",
+                    [],
+                )?;
+                for (offset, model) in [
+                    "gpt-6.1-sol-fast",
+                    "claude-sonnet-4-6",
+                    "unrecognized-model",
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    transaction.execute(
+                        "INSERT INTO usage_events (
+                        event_key, source_file_id, session_id, byte_offset, event_ordinal,
+                        occurred_at_ms, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
+                        model_provider, model_raw, input_tokens, fresh_input_tokens,
+                        cached_input_tokens, output_tokens, reasoning_tokens, total_tokens
+                     ) VALUES (
+                        ?1, (SELECT id FROM source_files WHERE source_key = 'jsonl:s1'),
+                        's2', ?2, ?2, 1783641601000, '2026-07-10', 'UTC',
+                        1783641600000, 1783728000000, 'custom', ?3, 10, 10, 0, 0, 0, 10
+                     )",
+                        params![format!("s2:{offset}"), offset as i64, model],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        let mut request = list_query();
+        request.filters.model_provider = Some("custom".into());
+        request.filters.model_vendors = vec!["openai".into(), "anthropic".into()];
+        request.page_size = 1;
+        let first = query.sessions(&request).unwrap();
+        assert_eq!(first.total, 2);
+        assert_eq!(first.items[0].model_provider, "custom");
+        assert_eq!(first.items[0].model_vendor, "openai");
+        request.page = 1;
+        assert_eq!(
+            query.sessions(&request).unwrap().items[0].model_vendor,
+            "anthropic"
+        );
+
+        let events = query
+            .usage_events("s2", 0, 1, &request.filters.model_vendors)
+            .unwrap();
+        assert_eq!(events.total, 2);
+        assert_eq!(events.items[0].model_vendor, "anthropic");
+        let events = query
+            .usage_events("s2", 1, 1, &request.filters.model_vendors)
+            .unwrap();
+        assert_eq!(events.items[0].model_vendor, "openai");
+        assert_eq!(query.usage_events("s2", 0, 1, &[]).unwrap().total, 3);
+    }
+
+    #[test]
+    fn vendor_filter_is_shared_by_usage_views_and_keeps_other_vendors_selectable() {
+        let query = crate::query::tests::seeded_query();
+        query.store.with_writer(|transaction| {
+            transaction.execute(
+                "INSERT INTO session_daily_usage (
+                    session_id, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
+                    workspace_id, model_provider, model_raw, pricing_model_id, archived,
+                    active_ms, input_tokens, fresh_input_tokens, cached_input_tokens,
+                    output_tokens, reasoning_tokens, total_tokens, priced_cost_microusd,
+                    priced_event_count, unpriced_event_count, last_activity_at_ms
+                 ) SELECT session_id, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
+                          workspace_id, 'custom', 'claude-sonnet-4-6', 'claude-sonnet-4-6', archived,
+                          800, 60, 60, 0, 20, 0, 80, 800, 1, 0, last_activity_at_ms + 100
+                   FROM session_daily_usage WHERE session_id = 's1'",
+                [],
+            )?;
+            transaction.execute(
+                "INSERT INTO usage_events (
+                    event_key, source_file_id, session_id, byte_offset, event_ordinal,
+                    occurred_at_ms, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
+                    model_provider, model_raw, input_tokens, fresh_input_tokens, cached_input_tokens,
+                    output_tokens, reasoning_tokens, total_tokens, estimated_cost_microusd
+                 ) SELECT event_key || ':claude', source_file_id, session_id, byte_offset + 1, event_ordinal + 1,
+                          occurred_at_ms + 100, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
+                          'custom', 'claude-sonnet-4-6', 60, 60, 0, 20, 0, 80, 800
+                   FROM usage_events WHERE session_id = 's1'",
+                [],
+            )?;
+            transaction.execute(
+                "INSERT INTO activity_segments (
+                    session_id, segment_index, started_at_ms, ended_at_ms, active_ms,
+                    method, is_estimate, local_date, timezone_id, model_provider, model_raw
+                 ) VALUES ('s1', 1, 1783641601100, 1783641601900, 800,
+                           'lifecycle', 0, '2026-07-10', 'UTC', 'custom', 'claude-sonnet-4-6')",
+                [],
+            )?;
+            transaction.execute(
+                "INSERT INTO session_daily_tool (
+                    session_id, local_date, timezone_id, day_start_utc_ms, day_end_utc_ms,
+                    workspace_id, archived, tool_name, category, operation_kind, call_count, last_activity_at_ms
+                 ) VALUES ('s1', '2026-07-11', 'UTC', 1783728000000, 1783814400000,
+                           'w1', 0, 'apply_patch', 'edit', 'mutating', 7, 1783728001000)",
+                [],
+            )?;
+            Ok(())
+        }).unwrap();
+        let mut request = list_query();
+        request.filters.model_vendors = vec!["anthropic".into()];
+        let detail = query.dashboard(&request.filters).unwrap();
+        assert_eq!(detail.hero.real_total_tokens, 80);
+        assert_eq!(detail.hero.active_ms, 800);
+        assert_eq!(detail.filter_options.vendors, ["anthropic", "openai"]);
+        assert_eq!(
+            detail
+                .trend
+                .iter()
+                .map(|point| point.total_tokens)
+                .sum::<i64>(),
+            80
+        );
+        assert_eq!(
+            query.models(&request).unwrap().items[0].model,
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            query.workspaces(&request).unwrap().items[0].total_tokens,
+            80
+        );
+        assert_eq!(query.tools(&request.filters).unwrap().total_calls, 3);
+        // The second day's tools have no matching model usage on that day.
+        request.filters.range.end_ms = Some(1_783_814_400_000);
+        let rollup = query.dashboard(&request.filters).unwrap();
+        assert_eq!(rollup.hero.real_total_tokens, 80);
+        assert_eq!(rollup.hero.estimated_cost_microusd, Some(800));
+        assert_eq!(query.tools(&request.filters).unwrap().total_calls, 3);
+        request.filters.model_vendors.push("openai".into());
+        assert_eq!(
+            query
+                .dashboard(&request.filters)
+                .unwrap()
+                .hero
+                .real_total_tokens,
+            200
+        );
+        request.filters.model_vendors = vec!["google".into()];
+        assert_eq!(
+            query
+                .dashboard(&request.filters)
+                .unwrap()
+                .hero
+                .real_total_tokens,
+            0
+        );
+        assert!(query.models(&request).unwrap().items.is_empty());
+        assert_eq!(query.tools(&request.filters).unwrap().total_calls, 0);
+        request.filters.model_vendors = vec!["anthropic".into()];
+        let today = Utc::now()
+            .with_timezone(&query.timezone)
+            .date_naive()
+            .to_string();
+        query
+            .store
+            .with_writer(|transaction| {
+                transaction.execute("UPDATE session_daily_usage SET local_date = ?1", [&today])?;
+                Ok(())
+            })
+            .unwrap();
+        let heatmap = query
+            .heatmap(&HeatmapQuery {
+                filters: request.filters,
+                metric: HeatmapMetric::Tokens,
+                span: HeatmapSpan::Week,
+            })
+            .unwrap();
+        assert_eq!(
+            heatmap
+                .points
+                .iter()
+                .map(|point| point.total_tokens)
+                .sum::<i64>(),
+            80
+        );
+    }
+
+    #[test]
     fn page_queries_are_server_paginated_and_keep_priced_values() {
         let query = crate::query::tests::seeded_query();
         let workspaces = query.workspaces(&list_query()).unwrap();
         let sessions = query.sessions(&list_query()).unwrap();
         let models = query.models(&list_query()).unwrap();
-        let events = query.usage_events("s1", 0, 25).unwrap();
+        let events = query.usage_events("s1", 0, 25, &[]).unwrap();
         let detail = query.session_detail("s1").unwrap();
         assert_eq!(workspaces.total, 1);
         assert_eq!(sessions.total, 1);
@@ -1752,7 +1978,7 @@ mod tests {
             .store
             .with_writer(|transaction| {
                 for (provider, model, pricing_id) in [
-                    ("openai", "gpt-5.6-terra", "gpt-5.6-terra"),
+                    ("unknown", "gpt-5.6-terra", "gpt-5.6-terra"),
                     ("custom", "gpt-5.6-sol", "gpt-5.6-sol"),
                     ("openai", "gpt-5.5", "gpt-5.5"),
                     ("openai", "codex-auto-review", ""),

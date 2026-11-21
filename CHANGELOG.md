@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.0 — 2026-11-21
+
+- 新增 Z Code 和 Google Antigravity 本地用量统计。Antigravity 支持桌面版、CLI 和 IDE 的独立目录配置。
+- 工作区按 agent 和项目路径区分。模型列表按基础型号汇总，并支持按供应商筛选。
+- 统一跨平台模型别名与自定义价格，补充腾讯混元、小米 MiMo 和 Gemini 4 Neon 的内置参考价。升级时自动迁移历史摘要和价格设置。
+
 ## 2.3.3 — 2026-11-17
 
 - 新增 12 个模型和 17 条价格记录，覆盖 OpenAI、Anthropic、Google、阿里云和腾讯混元。

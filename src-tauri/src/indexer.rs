@@ -11,7 +11,10 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::pricing::PricingCatalog;
-use crate::source::{CodexSource, SourceCapabilities};
+use crate::source::{
+    ChangePlan, CodexSource, ParsedRecord, SourceCapabilities, SourceChange, SourceCheckpoint,
+    SourceKind, StreamOutcome,
+};
 use crate::store::{SyncRunProgress, UsageStore};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +127,45 @@ pub struct UsageIndexer {
     run_guard: Mutex<()>,
 }
 
+/// A repair publishes a replacement only after the entire source was read.
+/// Returning an error here rolls back the same per-source ingestion transaction.
+struct RepairSource<'a>(&'a dyn CodexSource);
+
+impl CodexSource for RepairSource<'_> {
+    fn detect(&self) -> AppResult<SourceCapabilities> {
+        self.0.detect()
+    }
+
+    fn plan(&self, checkpoints: &[SourceCheckpoint]) -> AppResult<ChangePlan> {
+        self.0.plan(checkpoints)
+    }
+
+    fn stream(
+        &self,
+        change: &SourceChange,
+        sink: &mut dyn FnMut(ParsedRecord) -> AppResult<()>,
+        cancel: &AtomicBool,
+    ) -> AppResult<StreamOutcome> {
+        let outcome = self.0.stream(change, sink, cancel)?;
+        if outcome.cancelled || cancel.load(Ordering::Relaxed) {
+            return Err(AppError::new("sync_cancelled", "同步已取消"));
+        }
+        if outcome.parse_failures > 0
+            || outcome.incomplete_tail
+            || (matches!(
+                change.kind(),
+                SourceKind::Session | SourceKind::ArchivedSession
+            ) && outcome.records_emitted == 0)
+        {
+            return Err(AppError::new(
+                "repair_source_incomplete",
+                "来源无法完整读取，已保留此前记录",
+            ));
+        }
+        Ok(outcome)
+    }
+}
+
 impl UsageIndexer {
     pub fn new(
         store: Arc<UsageStore>,
@@ -164,6 +206,16 @@ impl UsageIndexer {
         self.idle_gap_ms.store(idle_gap_ms, Ordering::Relaxed);
     }
 
+    pub fn clear_analysis(&self) -> AppResult<()> {
+        let Some(_run_guard) = self.run_guard.try_lock() else {
+            return Err(AppError::new(
+                "sync_in_progress",
+                "请先取消并等待当前同步停止",
+            ));
+        };
+        self.store.clear_analysis()
+    }
+
     pub fn sync(&self, mode: SyncMode) -> AppResult<SyncStatus> {
         let Some(_run_guard) = self.run_guard.try_lock() else {
             return Ok(self.status());
@@ -171,11 +223,6 @@ impl UsageIndexer {
         self.cancel.store(false, Ordering::Relaxed);
         let started_at_ms = Utc::now().timestamp_millis();
         let started = Instant::now();
-        if mode == SyncMode::Rebuild
-            || (mode == SyncMode::Repair && !self.store.integrity_check()?)
-        {
-            self.store.reset_index()?;
-        }
         let run_id = Uuid::new_v4().to_string();
         self.replace_status(SyncStatus {
             run_id: Some(run_id.clone()),
@@ -186,6 +233,21 @@ impl UsageIndexer {
             ..SyncStatus::default()
         });
 
+        let prepare = || -> AppResult<()> {
+            if mode == SyncMode::Rebuild {
+                self.store.reset_index()?;
+            } else if mode == SyncMode::Repair && !self.store.integrity_check()? {
+                // Page-level corruption cannot safely be mapped to sessions.
+                // Never turn a selective repair into a destructive full reset.
+                return Err(AppError::new(
+                    "repair_database_damaged",
+                    "数据库结构损坏，已停止修复并保留现有数据",
+                ));
+            }
+            Ok(())
+        };
+        prepare().inspect_err(|error| self.fail_status(&error.code))?;
+
         let capabilities = self.source.detect().inspect_err(|_| {
             self.fail_status("source_detection_failed");
         })?;
@@ -193,9 +255,12 @@ impl UsageIndexer {
             status.capabilities = Some(capabilities);
             status.phase = SyncPhase::Planning;
         });
-        let checkpoints = self.store.source_checkpoints().inspect_err(|_| {
-            self.fail_status("checkpoint_read_failed");
-        })?;
+        let checkpoints = self
+            .store
+            .sync_checkpoints(mode == SyncMode::Repair)
+            .inspect_err(|_| {
+                self.fail_status("checkpoint_read_failed");
+            })?;
         let plan = self.source.plan(&checkpoints).inspect_err(|_| {
             self.fail_status("change_plan_failed");
         })?;
@@ -219,20 +284,31 @@ impl UsageIndexer {
             started_at_ms,
         )?;
 
+        let repair_source = RepairSource(self.source.as_ref());
+        let source: &dyn CodexSource = if mode == SyncMode::Repair {
+            &repair_source
+        } else {
+            self.source.as_ref()
+        };
         let mut displaced_sessions = HashSet::new();
         for change in &plan.changes {
             if self.cancel.load(Ordering::Relaxed) {
                 break;
             }
             self.update_status(|status| status.phase = SyncPhase::Importing);
-            let result = self.store.apply_source_change(
-                self.source.as_ref(),
-                change,
-                &self.pricing.read(),
-                self.timezone,
-                self.idle_gap_ms.load(Ordering::Relaxed),
-                &self.cancel,
-            );
+            let result = (|| {
+                if mode == SyncMode::Repair {
+                    self.store.ensure_repairable_source(change)?;
+                }
+                self.store.apply_source_change(
+                    source,
+                    change,
+                    &self.pricing.read(),
+                    self.timezone,
+                    self.idle_gap_ms.load(Ordering::Relaxed),
+                    &self.cancel,
+                )
+            })();
             match result {
                 Ok(result) => {
                     if let Some(session_id) = result.displaced_session_id {
@@ -391,6 +467,108 @@ pub fn default_codex_root() -> AppResult<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::FsCodexSource;
+
+    struct CancelAfterRecord(FsCodexSource);
+
+    impl CodexSource for CancelAfterRecord {
+        fn detect(&self) -> AppResult<SourceCapabilities> {
+            self.0.detect()
+        }
+
+        fn plan(&self, checkpoints: &[SourceCheckpoint]) -> AppResult<ChangePlan> {
+            self.0.plan(checkpoints)
+        }
+
+        fn stream(
+            &self,
+            change: &SourceChange,
+            sink: &mut dyn FnMut(ParsedRecord) -> AppResult<()>,
+            cancel: &AtomicBool,
+        ) -> AppResult<StreamOutcome> {
+            self.0.stream(
+                change,
+                &mut |record| {
+                    sink(record)?;
+                    cancel.store(true, Ordering::Relaxed);
+                    Ok(())
+                },
+                cancel,
+            )
+        }
+    }
+
+    #[test]
+    fn cancelled_codex_repair_keeps_the_previous_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("codex");
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let now = Utc::now().to_rfc3339();
+        let lines = [
+            serde_json::json!({"timestamp":now,"type":"session_meta","payload":{"id":"repair-cancel","cwd":"C:/repo","model_provider":"openai"}}),
+            serde_json::json!({"timestamp":now,"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}),
+            serde_json::json!({"timestamp":now,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":20}}}}),
+        ].map(|value| format!("{value}\n")).concat();
+        std::fs::write(root.join("sessions/rollout-repair.jsonl"), lines).unwrap();
+        let store = Arc::new(UsageStore::open(directory.path().join("usage.sqlite3")).unwrap());
+        let initial = UsageIndexer::new(
+            store.clone(),
+            Arc::new(FsCodexSource::new(&root)),
+            PricingCatalog::default(),
+            chrono_tz::UTC,
+            30 * 60 * 1000,
+        );
+        assert_eq!(initial.sync(SyncMode::Initial).unwrap().file_errors, 0);
+        store
+            .with_writer(|transaction| {
+                transaction.execute("UPDATE source_files SET status='error'", [])?;
+                Ok(())
+            })
+            .unwrap();
+        let repair = UsageIndexer::new(
+            store.clone(),
+            Arc::new(CancelAfterRecord(FsCodexSource::new(root))),
+            PricingCatalog::default(),
+            chrono_tz::UTC,
+            30 * 60 * 1000,
+        );
+        let status = repair.sync(SyncMode::Repair).unwrap();
+        assert_eq!(status.phase, SyncPhase::Cancelled);
+        store
+            .with_reader(|connection| {
+                let tokens: i64 = connection.query_row(
+                    "SELECT total_tokens FROM sessions WHERE id='repair-cancel'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(tokens, 120);
+                let tokens: i64 = connection.query_row(
+                    "SELECT SUM(total_tokens) FROM usage_events",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(tokens, 120);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn clearing_analysis_shares_the_sync_lock() {
+        let store = Arc::new(UsageStore::open_in_memory().unwrap());
+        let indexer = UsageIndexer::new(
+            store,
+            Arc::new(FsCodexSource::new("unused")),
+            PricingCatalog::default(),
+            chrono_tz::UTC,
+            30 * 60 * 1000,
+        );
+        let _running = indexer.run_guard.lock();
+        assert_eq!(
+            indexer.clear_analysis().unwrap_err().code,
+            "sync_in_progress"
+        );
+    }
 
     #[test]
     fn system_timezone_always_has_a_safe_fallback() {

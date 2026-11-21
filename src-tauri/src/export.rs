@@ -10,6 +10,7 @@ use crate::query::{
     DashboardSnapshot, ListQuery, ModelRow, Page, SessionRow, ToolsSnapshot, UsageFilters,
     UsageQuery, WorkspaceRow,
 };
+use crate::source::agents::workspace_label;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,7 +79,8 @@ impl UsageExporter {
                 if matches!(request.privacy, ExportPrivacy::Anonymous) {
                     for (index, option) in snapshot.filter_options.workspaces.iter_mut().enumerate()
                     {
-                        option.label = format!("Workspace {}", index + 1);
+                        option.label =
+                            workspace_label(&option.agent, &format!("Workspace {}", index + 1));
                     }
                 }
                 export_dashboard(request.format, snapshot)
@@ -365,7 +367,8 @@ fn json_output(value: &impl Serialize, rows: usize) -> AppResult<ExportOutput> {
 
 fn anonymize_workspaces(rows: &mut [WorkspaceRow]) {
     for (index, row) in rows.iter_mut().enumerate() {
-        row.label = format!("Workspace {}", index + 1);
+        row.label = workspace_label(&row.agent, &format!("Workspace {}", index + 1));
+        row.alias = None;
         row.normalized_path = "<anonymous>".to_string();
     }
 }
@@ -381,7 +384,7 @@ fn anonymize_sessions(rows: &mut [SessionRow]) {
                 next += 1;
                 value
             });
-        row.workspace_label = format!("Workspace {index}");
+        row.workspace_label = workspace_label(&row.agent, &format!("Workspace {index}"));
     }
 }
 
@@ -440,6 +443,7 @@ mod tests {
             active_method: "lifecycle".into(),
             active_is_estimate: false,
             model_provider: "openai".into(),
+            model_vendor: "openai".into(),
             latest_model: "gpt-5.6-sol".into(),
             total_tokens: 120,
             input_tokens: 100,
@@ -531,6 +535,8 @@ mod tests {
             active_timing_available: true,
             id: "w1".into(),
             label: "secret-repo".into(),
+            agent: "codex".into(),
+            alias: Some("secret alias".into()),
             normalized_path: "C:/secret/repo".into(),
             ignored: false,
             session_count: 1,
@@ -544,6 +550,7 @@ mod tests {
         anonymize_workspaces(&mut rows);
         let serialized = serde_json::to_string(&rows).unwrap();
         assert!(!serialized.contains("secret"));
+        assert_eq!(rows[0].label, "Codex-Workspace 1");
         assert_eq!(rows[0].normalized_path, "<anonymous>");
     }
 }
